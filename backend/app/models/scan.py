@@ -7,6 +7,7 @@ class ScanRequest(BaseModel):
     target: str = Field(
         ...,
         min_length=1,
+        max_length=2048,
         description=(
             "URL, domain, IP address, email address, "
             "or other indicator to analyze."

@@ -20,7 +20,8 @@ from app.services.threat_intelligence.base import (
 from app.services.threat_intelligence.registry import (
     get_url_threat_intel_providers,
 )
-from app.services.url_normalizer import normalize_url_target
+from app.services.url_normalizer import normalize_url_target, is_private_or_local_hostname
+from urllib.parse import urlparse
 
 
 def scan_url_target(
@@ -129,23 +130,36 @@ def collect_url_threat_intelligence(
 
     results: list[ThreatIntelResult] = []
 
-    for provider in active_providers:
-        try:
-            result = provider.check_url(target)
-            results.append(result)
+    parsed = urlparse(target)
+    blocked_target = is_private_or_local_hostname(parsed.hostname)
 
-        except Exception as exc:
+    for provider in active_providers:
+        if blocked_target:
             results.append(
                 ThreatIntelResult(
                     provider=provider.name,
                     available=False,
                     malicious=None,
                     score=None,
-                    details=(
-                        f"{provider.name} provider "
-                        "failed during lookup."
-                    ),
-                    error=str(exc),
+                    details="External threat-intelligence lookup was blocked for a private or local target.",
+                    error="blocked_private_target",
+                )
+            )
+            continue
+
+        try:
+            result = provider.check_url(target)
+            results.append(result)
+
+        except Exception:
+            results.append(
+                ThreatIntelResult(
+                    provider=provider.name,
+                    available=False,
+                    malicious=None,
+                    score=None,
+                    details=f"{provider.name} provider failed during lookup.",
+                    error="provider_failure",
                 )
             )
 

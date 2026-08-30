@@ -68,7 +68,7 @@ def test_provider_failure_does_not_crash_scan():
     assert results[0].available is False
     assert results[0].malicious is None
     assert results[0].score is None
-    assert results[0].error == "provider exploded"
+    assert results[0].error == "provider_failure"
 
 
 def test_scan_engine_returns_failed_provider_as_reputation():
@@ -83,7 +83,7 @@ def test_scan_engine_returns_failed_provider_as_reputation():
 
     assert response.intelligence[0].provider == "FailingProvider"
     assert response.intelligence[0].available is False
-    assert response.intelligence[0].error == "provider exploded"
+    assert response.intelligence[0].error == "provider_failure"
 
     assert response.risk_score == 0
     assert response.risk_level == "low"
@@ -108,15 +108,15 @@ def test_malicious_provider_intelligence_sets_critical_risk():
         providers=[provider],
     )
 
-    assert response.risk_score == 80
+    assert response.risk_score == 90
     assert response.risk_level == "critical"
 
     assert response.reputation.malicious is True
 
-    assert response.risk_assessment.score == 80
+    assert response.risk_assessment.score == 90
     assert response.risk_assessment.level == "critical"
-    assert response.risk_assessment.confidence == "medium"
-    assert response.risk_assessment.verdict == "potentially_malicious"
+    assert response.risk_assessment.confidence == "high"
+    assert response.risk_assessment.verdict == "confirmed_malicious"
 
 
 def test_second_provider_failure_does_not_break_scan():
@@ -150,7 +150,7 @@ def test_second_provider_failure_does_not_break_scan():
     ]
 
     assert response.intelligence[1].available is False
-    assert response.intelligence[1].error == "provider exploded"
+    assert response.intelligence[1].error == "provider_failure"
 
     assert response.risk_level == "low"
 
@@ -197,12 +197,12 @@ def test_second_provider_malicious_intelligence_affects_final_risk():
 
     assert response.intelligence[1].malicious is True
 
-    assert response.risk_score == 75
-    assert response.risk_level == "critical"
+    assert response.risk_score == 40
+    assert response.risk_level == "medium"
 
     assert (
         response.risk_assessment.verdict
-        == "potentially_malicious"
+        == "suspicious"
     )
 
 
@@ -243,9 +243,20 @@ def test_intelligence_preserves_both_provider_results_without_changing_reputatio
     assert response.intelligence[0].provider == "URLhaus"
     assert response.intelligence[1].provider == "VirusTotal"
 
-    assert response.risk_score == 60
+    assert response.risk_score == 62
     assert response.risk_level == "high"
 
-    assert response.risk_assessment.score == 60
+    assert response.risk_assessment.score == 62
     assert response.risk_assessment.level == "high"
+    assert response.risk_assessment.confidence == "high"
+
+def test_two_independent_malicious_providers_confirm_critical():
+    results = [
+        ThreatIntelResult("URLhaus", True, True, 80, "Known malicious URL."),
+        ThreatIntelResult("VirusTotal", True, True, 75, "Strong multi-engine evidence."),
+    ]
+    response = scan_url_target("https://example.com", providers=[StaticProvider(results[0]), StaticProvider(results[1])])
+    assert response.risk_score == 100
+    assert response.risk_level == "critical"
+    assert response.risk_assessment.verdict == "confirmed_by_multiple_sources"
     assert response.risk_assessment.confidence == "high"

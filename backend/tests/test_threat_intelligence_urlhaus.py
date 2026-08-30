@@ -75,7 +75,7 @@ def test_urlhaus_unavailable_result(monkeypatch):
     assert result.available is False
     assert result.malicious is None
     assert result.score is None
-    assert result.error == "timeout"
+    assert result.error == "network_error"
 
 
 def test_urlhaus_invalid_json_result(monkeypatch):
@@ -92,7 +92,7 @@ def test_urlhaus_invalid_json_result(monkeypatch):
 
     assert result.available is False
     assert result.malicious is None
-    assert result.error == "invalid json"
+    assert result.error == "invalid_response"
 
 
 def test_provider_registry_contains_urlhaus_and_virustotal_providers():

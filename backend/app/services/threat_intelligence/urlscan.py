@@ -4,6 +4,7 @@ import time
 import requests
 
 from app.services.threat_intelligence.base import ThreatIntelResult
+from app.services.threat_intelligence.http_utils import request_with_retry
 
 
 class URLScanProvider:
@@ -50,20 +51,17 @@ class URLScanProvider:
             # ---------------------------------------------------------
             # 1. Submit URL for scanning.
             # ---------------------------------------------------------
-            response = requests.post(
-                self.submit_endpoint,
-                headers=headers,
-                json={
-                    "url": url,
-                    # Private keeps submitted URLs out of public search.
-                    "visibility": "private",
-                },
-                timeout=self.timeout,
+            response = request_with_retry(
+                lambda: requests.post(
+                    self.submit_endpoint,
+                    headers=headers,
+                    json={
+                        "url": url,
+                        "visibility": "private",
+                    },
+                    timeout=self.timeout,
+                )
             )
-            if not response.ok:
-                print("URLSCAN STATUS:", response.status_code)
-                print("URLSCAN RESPONSE:", response.text)
-
             response.raise_for_status()
 
             submission = response.json()
@@ -89,13 +87,15 @@ class URLScanProvider:
             deadline = time.monotonic() + self.max_wait
 
             while time.monotonic() < deadline:
-                result_response = requests.get(
-                    result_url,
-                    headers={
-                        "api-key": api_key,
-                        "User-Agent": "FraudLensAI/1.0",
-                    },
-                    timeout=self.timeout,
+                result_response = request_with_retry(
+                    lambda: requests.get(
+                        result_url,
+                        headers={
+                            "api-key": api_key,
+                            "User-Agent": "FraudLensAI/1.0",
+                        },
+                        timeout=self.timeout,
+                    )
                 )
 
                 if result_response.status_code == 200:
@@ -132,7 +132,7 @@ class URLScanProvider:
                 malicious=None,
                 score=None,
                 details="urlscan.io could not be reached.",
-                error=str(exc),
+                error="network_error",
             )
 
         except ValueError as exc:
@@ -142,7 +142,7 @@ class URLScanProvider:
                 malicious=None,
                 score=None,
                 details="urlscan.io returned an invalid response.",
-                error=str(exc),
+                error="invalid_response",
             )
 
     def _build_result(

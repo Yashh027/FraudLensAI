@@ -3,6 +3,7 @@ import os
 import requests
 
 from app.services.threat_intelligence.base import ThreatIntelResult
+from app.services.threat_intelligence.http_utils import request_with_retry
 
 
 class URLhausProvider:
@@ -33,15 +34,13 @@ class URLhausProvider:
             )
 
         try:
-            response = requests.post(
-                self.endpoint,
-                headers={
-                    "Auth-Key": api_key,
-                },
-                data={
-                    "url": url,
-                },
-                timeout=self.timeout,
+            response = request_with_retry(
+                lambda: requests.post(
+                    self.endpoint,
+                    headers={"Auth-Key": api_key},
+                    data={"url": url},
+                    timeout=self.timeout,
+                )
             )
 
             response.raise_for_status()
@@ -89,7 +88,7 @@ class URLhausProvider:
                 malicious=None,
                 score=None,
                 details="URLhaus could not be reached.",
-                error=str(exc),
+                error="network_error",
             )
 
         except ValueError as exc:
@@ -99,5 +98,5 @@ class URLhausProvider:
                 malicious=None,
                 score=None,
                 details="URLhaus returned an invalid response.",
-                error=str(exc),
+                error="invalid_response",
             )

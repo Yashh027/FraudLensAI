@@ -5,6 +5,7 @@ from typing import Any
 import requests
 
 from app.services.threat_intelligence.base import ThreatIntelResult
+from app.services.threat_intelligence.http_utils import request_with_retry
 
 
 class VirusTotalProvider:
@@ -31,10 +32,12 @@ class VirusTotalProvider:
         url_id = create_url_identifier(url)
 
         try:
-            response = requests.get(
-                f"{self.endpoint}/{url_id}",
-                headers={"x-apikey": api_key},
-                timeout=self.timeout,
+            response = request_with_retry(
+                lambda: requests.get(
+                    f"{self.endpoint}/{url_id}",
+                    headers={"x-apikey": api_key},
+                    timeout=self.timeout,
+                )
             )
         except requests.RequestException as exc:
             return ThreatIntelResult(
@@ -43,7 +46,7 @@ class VirusTotalProvider:
                 malicious=None,
                 score=None,
                 details="VirusTotal could not be reached.",
-                error=str(exc),
+                error="network_error",
             )
 
         if response.status_code == 404:
@@ -98,7 +101,7 @@ class VirusTotalProvider:
                 malicious=None,
                 score=None,
                 details="VirusTotal returned malformed JSON.",
-                error=str(exc),
+                error="invalid_response",
             )
 
         return parse_url_report(payload)
@@ -141,7 +144,14 @@ def parse_url_report(payload: dict[str, Any]) -> ThreatIntelResult:
         + timeout_count
     )
 
-    malicious = malicious_count > 0
+    # A single engine can be a false positive. Treat VirusTotal as
+    # "confirmed malicious" only when there is meaningful multi-engine
+    # agreement; the numeric score still reflects weaker signals.
+    malicious_rate = (malicious_count / analyzed_count) if analyzed_count else 0
+    malicious = (
+        malicious_count >= 2
+        and malicious_rate >= 0.05
+    ) or malicious_count >= 5
 
     # Score formula: malicious detections carry full weight and suspicious
     # detections carry half weight, normalized by analyzed engines.

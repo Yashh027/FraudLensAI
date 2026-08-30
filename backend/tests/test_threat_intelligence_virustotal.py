@@ -96,6 +96,29 @@ def test_successful_virustotal_response(monkeypatch):
     assert "does not prove safety" in result.details
 
 
+def test_virustotal_single_detection_is_not_confirmed_malicious(monkeypatch):
+    def fake_get(endpoint, headers, timeout):
+        return FakeResponse(
+            payload=report_payload(
+                malicious=1,
+                suspicious=0,
+                harmless=69,
+            )
+        )
+
+    monkeypatch.setenv("VIRUSTOTAL_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "app.services.threat_intelligence.virustotal.requests.get",
+        fake_get,
+    )
+
+    result = VirusTotalProvider().check_url("https://google.com")
+
+    assert result.available is True
+    assert result.malicious is False
+    assert result.score == 1
+
+
 def test_virustotal_malicious_detections(monkeypatch):
     def fake_get(endpoint, headers, timeout):
         return FakeResponse(
@@ -236,7 +259,7 @@ def test_virustotal_network_failure(monkeypatch):
     assert result.available is False
     assert result.malicious is None
     assert result.score is None
-    assert result.error == "connection failed"
+    assert result.error == "network_error"
 
 
 def test_virustotal_timeout(monkeypatch):
@@ -254,7 +277,7 @@ def test_virustotal_timeout(monkeypatch):
     assert result.available is False
     assert result.malicious is None
     assert result.score is None
-    assert result.error == "timed out"
+    assert result.error == "network_error"
 
 
 def test_virustotal_malformed_json(monkeypatch):
@@ -271,7 +294,7 @@ def test_virustotal_malformed_json(monkeypatch):
 
     assert result.available is False
     assert result.malicious is None
-    assert result.error == "bad json"
+    assert result.error == "invalid_response"
 
 
 def test_virustotal_unexpected_response_structure(monkeypatch):

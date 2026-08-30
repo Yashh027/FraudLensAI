@@ -110,7 +110,7 @@ def test_malicious_reputation_produces_critical_risk(monkeypatch):
 
     data = response.json()
 
-    assert data["risk_score"] == 80
+    assert data["risk_score"] == 90
     assert data["risk_level"] == "critical"
     assert data["reputation"]["malicious"] is True
 
