@@ -1,3 +1,5 @@
+import os
+
 import requests
 
 from app.services.threat_intelligence.base import ThreatIntelResult
@@ -15,10 +17,30 @@ class URLhausProvider:
         Failure to contact URLhaus does not mean the URL is safe.
         """
 
+        api_key = os.getenv("URLHAUS_API_KEY", "").strip()
+
+        if not api_key:
+            return ThreatIntelResult(
+                provider=self.name,
+                available=False,
+                malicious=None,
+                score=None,
+                details=(
+                    "URLhaus is not configured. Set "
+                    "URLHAUS_API_KEY to enable URLhaus lookups."
+                ),
+                error="missing_api_key",
+            )
+
         try:
             response = requests.post(
                 self.endpoint,
-                data={"url": url},
+                headers={
+                    "Auth-Key": api_key,
+                },
+                data={
+                    "url": url,
+                },
                 timeout=self.timeout,
             )
 
@@ -45,7 +67,9 @@ class URLhausProvider:
                     available=True,
                     malicious=True,
                     score=80,
-                    details="The URL was found in URLhaus threat intelligence.",
+                    details=(
+                        "The URL was found in URLhaus threat intelligence."
+                    ),
                 )
 
             return ThreatIntelResult(
@@ -53,7 +77,9 @@ class URLhausProvider:
                 available=True,
                 malicious=None,
                 score=None,
-                details=f"URLhaus returned query status: {query_status}",
+                details=(
+                    f"URLhaus returned query status: {query_status}"
+                ),
             )
 
         except requests.RequestException as exc:

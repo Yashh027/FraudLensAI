@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   AlertTriangle,
@@ -69,27 +69,138 @@ function RiskIcon({ level, size = 20 }) {
   return <ShieldCheck size={size} />;
 }
 
+const SCAN_STAGES = [
+  "INITIALIZING FRAUDLENS-X",
+  "NORMALIZING TARGET",
+  "ANALYZING URL STRUCTURE",
+  "CHECKING LOCAL INDICATORS",
+  "QUERYING THREAT INTELLIGENCE",
+  "CORRELATING SIGNALS",
+  "GENERATING RISK ASSESSMENT",
+  "SCAN COMPLETE",
+];
+
+const SCAN_PROGRESS = [7, 24, 51, 78, 92, 96, 99, 100];
+
+const SCAN_STAGE_TIMES = [
+  0,
+  650,
+  1300,
+  1950,
+  2750,
+  3500,
+  4250,
+  5000,
+];
+
+function parseTargetParts(value) {
+  if (!value) return [];
+
+  try {
+    const parsed = new URL(
+      /^https?:\/\//i.test(value) ? value : `https://${value}`
+    );
+
+    const params = parsed.search ? parsed.search.slice(1) : "";
+    const path = parsed.pathname || "/";
+
+    return [
+      {
+        key: "PROTOCOL",
+        value: `${parsed.protocol.replace(":", "").toUpperCase()}://`,
+        status: "PARSED",
+      },
+      {
+        key: "DOMAIN",
+        value: parsed.hostname || "—",
+        status: "PARSED",
+      },
+      {
+        key: "PORT",
+        value: parsed.port || "DEFAULT",
+        status: parsed.port ? "EXPLICIT" : "DEFAULT",
+      },
+      {
+        key: "PATH",
+        value: path,
+        status: path === "/" ? "ROOT" : "PARSED",
+      },
+      {
+        key: "PARAMETERS",
+        value: params || "NONE",
+        status: params ? "PRESENT" : "NONE",
+      },
+      {
+        key: "FRAGMENT",
+        value: parsed.hash ? parsed.hash.slice(1) : "NONE",
+        status: parsed.hash ? "PRESENT" : "NONE",
+      },
+      {
+        key: "REDIRECTS",
+        value: "NOT REPORTED",
+        status: "BACKEND DATA",
+      },
+    ];
+  } catch {
+    return [
+      {
+        key: "TARGET",
+        value,
+        status: "RAW INPUT",
+      },
+    ];
+  }
+}
+
+function confidencePercent(value) {
+  if (
+    typeof value === "number" &&
+    Number.isFinite(value)
+  ) {
+    return Math.max(0, Math.min(100, value));
+  }
+
+  const normalized = String(value || "").toLowerCase();
+
+  if (normalized === "very high" || normalized === "critical") {
+    return 95;
+  }
+
+  if (normalized === "high") {
+    return 85;
+  }
+
+  if (normalized === "medium") {
+    return 65;
+  }
+
+  if (normalized === "low") {
+    return 40;
+  }
+
+  return null;
+}
+
 function App() {
-  const [target, setTarget] = useState("");
+  const [target, setTarget] = useState("https://");
   const [scanResult, setScanResult] = useState(null);
   const [history, setHistory] = useState([]);
   const [selectedScan, setSelectedScan] = useState(null);
+
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
+
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [uptime, setUptime] = useState(99.98);
 
   const [scanStage, setScanStage] = useState(0);
+  const [scanProgress, setScanProgress] = useState(0);
+  const [displayScore, setDisplayScore] = useState(0);
 
-  const scanStages = [
-    "INITIALIZING SECURE ANALYSIS",
-    "PARSING TARGET INFRASTRUCTURE",
-    "RUNNING LOCAL THREAT ENGINE",
-    "QUERYING THREAT INTELLIGENCE",
-    "CORRELATING SECURITY SIGNALS",
-    "GENERATING RISK ASSESSMENT",
-  ];
+  const [traceOpen, setTraceOpen] = useState(false);
+  const [traceStage, setTraceStage] = useState(-1);
+  const [resultRevealed, setResultRevealed] = useState(false);
 
   function scrollToTop() {
     window.scrollTo({
@@ -100,22 +211,67 @@ function App() {
   }
 
   async function loadHistory() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+
     try {
       setHistoryLoading(true);
 
-      const response = await fetch("/api/v1/history?limit=20");
+      const response = await fetch("/api/v1/history?limit=20", {
+        method: "GET",
+        signal: controller.signal,
+        cache: "no-store",
+      });
 
       if (!response.ok) {
-        throw new Error("Unable to load scan history.");
+        throw new Error(`History API returned ${response.status}.`);
       }
 
       const data = await response.json();
-      setHistory(data);
+
+      // The backend returns an array. Keep this defensive for wrapped APIs.
+      const records = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.items)
+          ? data.items
+          : null;
+
+      if (records === null) {
+        throw new Error("History API returned an invalid response.");
+      }
+
+      setHistory(records);
+      return true;
     } catch (err) {
-      console.error(err);
+      // History is secondary UI. A failed history request must NEVER make
+      // the scanner look broken or display a red error banner on page load.
+      console.warn("Scan history unavailable:", err);
+      return false;
     } finally {
+      clearTimeout(timeout);
       setHistoryLoading(false);
     }
+  }
+
+  function addLocalHistoryRecord(data) {
+    if (!data) return;
+
+    const localRecord = {
+      id: `local-${Date.now()}`,
+      target: data.target,
+      target_type: data.target_type,
+      risk_score: data.risk_score,
+      risk_level: data.risk_level,
+      verdict: data.risk_assessment?.verdict || "Assessment complete",
+      confidence: data.risk_assessment?.confidence || "Unknown",
+      created_at: new Date().toISOString(),
+      local: true,
+    };
+
+    setHistory((previous) => [
+      localRecord,
+      ...previous.filter((record) => record.target !== localRecord.target),
+    ]);
   }
 
   useEffect(() => {
@@ -138,7 +294,10 @@ function App() {
         Number(
           Math.min(
             99.99,
-            Math.max(99.91, previous + (Math.random() - 0.45) * 0.01)
+            Math.max(
+              99.91,
+              previous + (Math.random() - 0.45) * 0.01
+            )
           ).toFixed(2)
         )
       );
@@ -153,25 +312,105 @@ function App() {
   useEffect(() => {
     if (!loading) {
       setScanStage(0);
+      setScanProgress(0);
       return;
     }
 
-    const stageInterval = setInterval(() => {
-      setScanStage((previous) =>
-        Math.min(previous + 1, scanStages.length - 1)
-      );
-    }, 800);
+    const startedAt = performance.now();
 
-    return () => clearInterval(stageInterval);
+    const tick = () => {
+      const elapsed = performance.now() - startedAt;
+
+      let stage = 0;
+
+      for (let i = 0; i < SCAN_STAGE_TIMES.length; i += 1) {
+        if (elapsed >= SCAN_STAGE_TIMES[i]) {
+          stage = i;
+        }
+      }
+
+      setScanStage(stage);
+      setScanProgress(SCAN_PROGRESS[stage]);
+    };
+
+    tick();
+
+    const interval = setInterval(tick, 80);
+
+    return () => clearInterval(interval);
   }, [loading]);
+
+  useEffect(() => {
+    if (!scanResult) {
+      setDisplayScore(0);
+      setResultRevealed(false);
+      return;
+    }
+
+    const targetScore = Math.min(
+      Math.max(Number(scanResult.risk_score) || 0, 0),
+      100
+    );
+
+    setDisplayScore(0);
+    setResultRevealed(false);
+
+    const startedAt = performance.now();
+    const duration = 1050;
+
+    const timer = setInterval(() => {
+      const progress = Math.min(
+        1,
+        (performance.now() - startedAt) / duration
+      );
+
+      const eased = 1 - Math.pow(1 - progress, 3);
+
+      setDisplayScore(
+        Math.round(targetScore * eased)
+      );
+
+      if (progress >= 1) {
+        clearInterval(timer);
+        setResultRevealed(true);
+      }
+    }, 32);
+
+    return () => clearInterval(timer);
+  }, [scanResult]);
+
+  useEffect(() => {
+    if (!traceOpen) {
+      setTraceStage(-1);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setTraceStage((previous) =>
+        Math.min(previous + 1, 7)
+      );
+    }, 420);
+
+    return () => clearInterval(interval);
+  }, [traceOpen]);
 
   async function handleScan(event) {
     event.preventDefault();
 
-    const cleanTarget = target.trim();
+    let cleanTarget = target.trim();
 
-    if (!cleanTarget) {
-      setError("Enter a URL to scan.");
+    // The input starts with https://. If the user pasted a URL without a
+    // protocol, normalize it before sending it to the backend.
+    if (!/^https?:\/\//i.test(cleanTarget)) {
+      cleanTarget = `https://${cleanTarget}`;
+    }
+
+    if (
+      !cleanTarget ||
+      cleanTarget === "https://" ||
+      cleanTarget === "http://"
+    ) {
+      setError("Enter a complete URL to scan.");
       return;
     }
 
@@ -179,10 +418,15 @@ function App() {
     setError("");
     setScanResult(null);
     setScanStage(0);
+    setScanProgress(SCAN_PROGRESS[0]);
+    setTraceOpen(false);
 
-    const minimumAnimationTime = new Promise((resolve) => {
-      setTimeout(resolve, 5000);
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+
+    const minimumAnimationTime = new Promise((resolve) =>
+      setTimeout(resolve, 5000)
+    );
 
     try {
       const scanRequest = fetch("/api/v1/scan/url", {
@@ -193,43 +437,89 @@ function App() {
         body: JSON.stringify({
           target: cleanTarget,
         }),
+        signal: controller.signal,
       }).then(async (response) => {
-        const data = await response.json();
+        const contentType = response.headers.get("content-type") || "";
+        const data = contentType.includes("application/json")
+          ? await response.json()
+          : await response.text();
 
         if (!response.ok) {
-          throw new Error(data.detail || "The scan request failed.");
+          const detail =
+            typeof data === "object" && data?.detail
+              ? data.detail
+              : typeof data === "string" && data
+                ? data
+                : "The scan request failed.";
+
+          throw new Error(detail);
         }
 
         return data;
       });
 
+      // Keep the visual scan sequence, but never wait for history here.
       const [data] = await Promise.all([
         scanRequest,
         minimumAnimationTime,
       ]);
 
+      setScanStage(SCAN_STAGES.length - 1);
+      setScanProgress(100);
       setScanResult(data);
-      setTarget("");
 
-      await loadHistory();
+      // Keep the input ready for the next scan with https:// pre-written.
+      setTarget("https://");
+
+      // The scan endpoint has already committed the record to PostgreSQL
+      // before returning. Show it immediately even if the separate history
+      // GET request is slow or temporarily unavailable.
+      addLocalHistoryRecord(data);
+
+      // Stop the loading UI as soon as the real scan succeeds.
+      setLoading(false);
+
+      // Refresh from PostgreSQL in the background. If it fails, the local
+      // record above remains visible instead of producing a false error.
+      void loadHistory();
     } catch (err) {
-      setError(
-        err.message || "Could not connect to the FraudLens backend."
-      );
+      if (err.name === "AbortError") {
+        setError(
+          "The scan request timed out. Check that the FraudLens backend and threat-intelligence services are running."
+        );
+      } else {
+        setError(
+          err.message || "Could not connect to the FraudLens backend."
+        );
+      }
     } finally {
+      clearTimeout(timeout);
       setLoading(false);
     }
   }
 
   async function openHistoryItem(id) {
+    if (String(id).startsWith("local-")) {
+      const localRecord = history.find((record) => record.id === id);
+      if (localRecord) {
+        setSelectedScan(localRecord);
+      }
+      return;
+    }
+
     try {
-      const response = await fetch(`/api/v1/history/${id}`);
+      const response = await fetch(
+        `/api/v1/history/${id}`
+      );
 
       if (!response.ok) {
-        throw new Error("Unable to load scan details.");
+        throw new Error(
+          "Unable to load scan details."
+        );
       }
 
       const data = await response.json();
+
       setSelectedScan(data);
     } catch (err) {
       setError(err.message);
@@ -239,6 +529,7 @@ function App() {
   async function copyTarget(value) {
     try {
       await navigator.clipboard.writeText(value);
+
       setCopied(true);
 
       setTimeout(() => {
@@ -254,15 +545,75 @@ function App() {
     100
   );
 
-  const riskClass = getRiskClass(scanResult?.risk_level);
+  const riskClass = getRiskClass(
+    scanResult?.risk_level
+  );
 
   const selectedRiskClass = getRiskClass(
     selectedScan?.risk_level
   );
 
+  const activeScanTarget =
+    scanResult?.target || target;
+
+  const urlParts = useMemo(
+    () => parseTargetParts(activeScanTarget),
+    [activeScanTarget]
+  );
+
+  const intelProviders =
+    scanResult?.intelligence || [];
+
+  const availableIntel = intelProviders.filter(
+    (provider) => provider.available
+  );
+
+  const maliciousIntel = availableIntel.filter(
+    (provider) => provider.malicious
+  );
+
+  const localSignals =
+    scanResult?.findings?.length || 0;
+
+  const confidenceValue = confidencePercent(
+    scanResult?.risk_assessment?.confidence
+  );
+
+  const telemetry = [
+    {
+      label: "LOCAL SIGNALS",
+      value: localSignals,
+      suffix: "DETECTED",
+      width: Math.min(100, localSignals * 20),
+    },
+    {
+      label: "INTEL MATCHES",
+      value: maliciousIntel.length,
+      suffix: "MATCHED",
+      width: Math.min(
+        100,
+        maliciousIntel.length * 25
+      ),
+    },
+    {
+      label: "THREAT SCORE",
+      value: scanResult ? riskScore : 0,
+      suffix: "/ 100",
+      width: riskScore,
+    },
+    {
+      label: "CONFIDENCE",
+      value: confidenceValue,
+      suffix:
+        confidenceValue === null
+          ? "NOT REPORTED"
+          : "%",
+      width: confidenceValue ?? 0,
+    },
+  ];
+
   return (
     <div className="app-shell">
-
       {/* ================= BACKGROUND SYSTEM ================= */}
 
       <div className="ambient-grid" />
@@ -273,7 +624,6 @@ function App() {
       {/* ================= HEADER ================= */}
 
       <header className="topbar">
-
         <button
           className="brand brand-button"
           onClick={scrollToTop}
@@ -305,11 +655,34 @@ function App() {
         </div>
 
         <div className="system-status">
-
-          <div className="status-item">
+          <div className="status-item status-api">
             <Activity size={15} />
             <span>API</span>
             <strong>ONLINE</strong>
+          </div>
+
+          <div className="status-divider" />
+
+          <div className="status-item status-optional">
+            <ScanLine size={15} />
+            <span>ENGINE</span>
+            <strong>READY</strong>
+          </div>
+
+          <div className="status-divider status-optional" />
+
+          <div className="status-item status-optional">
+            <Radio size={15} />
+            <span>INTEL</span>
+            <strong>CONNECTED</strong>
+          </div>
+
+          <div className="status-divider status-optional" />
+
+          <div className="status-item status-optional">
+            <Database size={15} />
+            <span>DB</span>
+            <strong>OPERATIONAL</strong>
           </div>
 
           <div className="status-divider" />
@@ -319,22 +692,20 @@ function App() {
             <span>UPTIME</span>
             <strong>{uptime}%</strong>
           </div>
-
         </div>
-
       </header>
 
       <main className="dashboard">
-
         {/* ================= HERO ================= */}
 
         <section className="hero">
-
           <div className="hero-content">
-
             <div className="hero-kicker">
               <span className="kicker-line" />
-              <span>THREAT INTELLIGENCE / URL ANALYSIS</span>
+
+              <span>
+                THREAT INTELLIGENCE / URL ANALYSIS
+              </span>
 
               <span className="kicker-status">
                 <span />
@@ -349,13 +720,13 @@ function App() {
             </h1>
 
             <p>
-              FraudLens analyzes suspicious URLs using deterministic
-              local indicators and external threat intelligence to
-              identify malicious infrastructure before interaction.
+              FraudLens analyzes suspicious URLs using
+              deterministic local indicators and external
+              threat intelligence to identify malicious
+              infrastructure before interaction.
             </p>
 
             <div className="hero-metrics">
-
               <div>
                 <span>ENGINE</span>
                 <strong>FRAUDLENS-X</strong>
@@ -370,15 +741,11 @@ function App() {
                 <span>MODE</span>
                 <strong>NON-INTRUSIVE</strong>
               </div>
-
             </div>
-
           </div>
 
           <div className="hero-visual">
-
             <div className="radar">
-
               <div className="radar-ring ring-one" />
               <div className="radar-ring ring-two" />
               <div className="radar-ring ring-three" />
@@ -395,16 +762,13 @@ function App() {
               <div className="radar-point point-one" />
               <div className="radar-point point-two" />
               <div className="radar-point point-three" />
-
             </div>
 
             <div className="radar-label">
               <Radio size={13} />
               THREAT RADAR
             </div>
-
           </div>
-
         </section>
 
         {/* ================= SCANNER ================= */}
@@ -414,11 +778,8 @@ function App() {
             loading ? "is-scanning" : ""
           }`}
         >
-
           <div className="scanner-topline">
-
             <div className="scanner-title">
-
               <div className="module-icon">
                 <ScanLine size={18} />
               </div>
@@ -427,22 +788,23 @@ function App() {
                 <span>01 / ANALYSIS MODULE</span>
                 <h2>URL Security Scanner</h2>
               </div>
-
             </div>
 
             <div className="scanner-state">
               <span className="state-dot" />
-              {loading
-                ? "ANALYSIS IN PROGRESS"
-                : "ENGINE STANDBY"}
-            </div>
 
+              {loading
+                ? scanStage >= 5
+                  ? "CORRELATING"
+                  : "ANALYZING"
+                : scanResult
+                  ? "COMPLETE"
+                  : "STANDBY"}
+            </div>
           </div>
 
           <div className="scanner-terminal">
-
             <div className="terminal-header">
-
               <div className="terminal-dots">
                 <span />
                 <span />
@@ -458,40 +820,48 @@ function App() {
                 <ShieldCheck size={13} />
                 SECURE
               </div>
-
             </div>
 
             <form onSubmit={handleScan}>
-
               <div className="input-wrapper">
-
                 <span className="input-prompt">
                   <span>root@fraudlens</span>:~$
                 </span>
 
                 <Link2 size={18} />
 
+                <span className="url-prefix" aria-hidden="true">
+                  https://
+                </span>
+
                 <input
                   type="text"
-                  value={target}
-                  onChange={(event) =>
-                    setTarget(event.target.value)
-                  }
-                  placeholder="Enter suspicious URL..."
+                  value={target.replace(/^https?:\/\//i, "")}
+                  onChange={(event) => {
+                    const value = event.target.value
+                      .replace(/^https?:\/\//i, "")
+                      .trimStart();
+
+                    // HTTPS is rendered as a fixed, non-editable prefix.
+                    // Only the URL remainder is stored in the editable field,
+                    // which prevents the browser caret from corrupting `https://`.
+                    setTarget(`https://${value}`);
+                  }}
+                  placeholder="example.com/..."
                   disabled={loading}
                   autoComplete="off"
+                  spellCheck={false}
                 />
 
                 {target && (
                   <button
                     type="button"
                     className="input-clear"
-                    onClick={() => setTarget("")}
+                    onClick={() => setTarget("https://")}
                   >
                     <X size={15} />
                   </button>
                 )}
-
               </div>
 
               <button
@@ -499,11 +869,11 @@ function App() {
                 type="submit"
                 disabled={loading}
               >
-
                 {loading ? (
                   <>
                     <span className="button-spinner" />
-                    ANALYZING TARGET
+                    {SCAN_STAGES[scanStage] ||
+                      "ANALYZING TARGET"}
                   </>
                 ) : (
                   <>
@@ -511,46 +881,55 @@ function App() {
                     <Zap size={16} />
                   </>
                 )}
-
               </button>
-
             </form>
 
             {/* ================= 5 SECOND SCAN ANIMATION ================= */}
 
             {loading && (
               <div className="scan-animation">
-
                 <div className="scan-animation-grid" />
 
                 <div className="scan-beam" />
 
+                <div className="scan-rings">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+
+                <div className="scan-packets">
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                </div>
+
                 <div className="scan-hud">
-
                   <div className="scan-hud-left">
-
                     <div className="scan-hud-icon">
                       <Shield size={25} />
                     </div>
 
                     <div>
-                      <span>FRAUDLENS-X SECURITY ENGINE</span>
+                      <span>
+                        FRAUDLENS-X SECURITY ENGINE
+                      </span>
+
                       <strong>
-                        {scanStages[scanStage]}
+                        {SCAN_STAGES[scanStage]}
                       </strong>
                     </div>
-
                   </div>
 
                   <div className="scan-hud-status">
                     <span className="hud-live-dot" />
                     LIVE
                   </div>
-
                 </div>
 
                 <div className="scan-target-display">
-
                   <div className="target-crosshair">
                     <span />
                     <span />
@@ -564,81 +943,75 @@ function App() {
                   </div>
 
                   <div className="scan-pulse-ring" />
-
                 </div>
 
                 <div className="scan-log">
+                  {SCAN_STAGES.slice(0, 7).map(
+                    (stage, index) => (
+                      <div
+                        className={
+                          index <= scanStage
+                            ? "log-active"
+                            : ""
+                        }
+                        key={stage}
+                      >
+                        <span>
+                          [
+                          {String(index + 1).padStart(
+                            2,
+                            "0"
+                          )}
+                          ]
+                        </span>
 
-                  <div>
-                    <span>[01]</span>
-                    Establishing isolated analysis environment...
-                    <b>OK</b>
-                  </div>
+                        {stage}
 
-                  <div>
-                    <span>[02]</span>
-                    Inspecting URL structure and indicators...
-                    <b>OK</b>
-                  </div>
-
-                  <div>
-                    <span>[03]</span>
-                    Correlating external intelligence...
-                    <b>RUN</b>
-                  </div>
-
-                  <div>
-                    <span>[04]</span>
-                    Building threat assessment matrix...
-                    <b>RUN</b>
-                  </div>
-
+                        <b>
+                          {index < scanStage
+                            ? "OK"
+                            : index === scanStage
+                              ? "RUN"
+                              : "WAIT"}
+                        </b>
+                      </div>
+                    )
+                  )}
                 </div>
 
                 <div className="scan-progress-wrapper">
-
                   <div className="scan-progress-meta">
                     <span>
                       SECURITY ANALYSIS
                     </span>
 
                     <strong>
-                      {Math.min(
-                        98,
-                        Math.round(
-                          ((scanStage + 1) /
-                            scanStages.length) *
-                            100
-                        )
-                      )}
-                      %
+                      {scanProgress}%
                     </strong>
                   </div>
 
                   <div className="scan-progress">
                     <span
                       style={{
-                        width: `${
-                          Math.min(
-                            98,
-                            ((scanStage + 1) /
-                              scanStages.length) *
-                              100
-                          )
-                        }%`,
+                        width: `${scanProgress}%`,
                       }}
                     />
                   </div>
-
                 </div>
-
               </div>
             )}
+          </div>
 
+          <div className="security-mode">
+            <span>◉ PASSIVE ANALYSIS MODE</span>
+
+            <small>
+              FraudLens never opens or executes the target
+              URL during analysis.
+            </small>
           </div>
 
           <div className="scanner-footer">
-
             <span>
               <ShieldCheck size={14} />
               No page interaction
@@ -664,7 +1037,6 @@ function App() {
                 <i />
               </span>
             </span>
-
           </div>
 
           {error && (
@@ -673,16 +1045,19 @@ function App() {
               <span>{error}</span>
             </div>
           )}
-
         </section>
 
         {/* ================= RESULTS ================= */}
 
         {scanResult && (
-          <section className="results-section">
-
+          <section
+            className={`results-section ${
+              resultRevealed
+                ? "result-revealed"
+                : "result-entering"
+            }`}
+          >
             <div className="section-heading">
-
               <div>
                 <span className="eyebrow">
                   02 / SECURITY ASSESSMENT
@@ -697,56 +1072,52 @@ function App() {
                   size={17}
                 />
 
-                {formatRiskLevel(scanResult.risk_level)}
+                {formatRiskLevel(
+                  scanResult.risk_level
+                )}
               </div>
-
             </div>
 
             <div className="result-grid">
-
               <div className={`score-card ${riskClass}`}>
-
                 <div className="score-card-header">
                   <span>THREAT INDEX</span>
                   <Activity size={15} />
                 </div>
 
                 <div className="score-layout">
-
                   <div
                     className={`score-ring ${riskClass}`}
                     style={{
                       "--score": riskScore,
                     }}
                   >
-
                     <div className="score-ring-glow" />
 
                     <div className="score-ring-content">
-                      <strong>{scanResult.risk_score}</strong>
+                      <strong>{displayScore}</strong>
                       <span>/ 100</span>
                     </div>
-
                   </div>
 
                   <div className="score-information">
-
                     <span className="card-label">
                       SYSTEM VERDICT
                     </span>
 
                     <h4>
                       {formatVerdict(
-                        scanResult.risk_assessment?.verdict
+                        scanResult.risk_assessment
+                          ?.verdict
                       )}
                     </h4>
 
                     <p>
-                      Confidence
+                      Confidence{" "}
                       <strong>
-                        {" "}
                         {formatRiskLevel(
-                          scanResult.risk_assessment?.confidence
+                          scanResult.risk_assessment
+                            ?.confidence
                         )}
                       </strong>
                     </p>
@@ -764,9 +1135,7 @@ function App() {
                       )}{" "}
                       THREAT LEVEL
                     </div>
-
                   </div>
-
                 </div>
 
                 <div className="score-bottom">
@@ -774,21 +1143,16 @@ function App() {
                   <strong>ACTIVE</strong>
                   <span className="score-pulse" />
                 </div>
-
               </div>
 
               <div className="assessment-card">
-
                 <div className="assessment-top">
-
                   <div>
-
                     <span className="card-label">
                       ANALYZED TARGET
                     </span>
 
                     <div className="target-value">
-
                       <Link2 size={16} />
 
                       <span>
@@ -799,7 +1163,9 @@ function App() {
                         type="button"
                         className="copy-button"
                         onClick={() =>
-                          copyTarget(scanResult.target)
+                          copyTarget(
+                            scanResult.target
+                          )
                         }
                         title="Copy target"
                       >
@@ -809,22 +1175,18 @@ function App() {
                           <Copy size={16} />
                         )}
                       </button>
-
                     </div>
-
                   </div>
 
                   <div className="analyzed-status">
                     <span />
                     ANALYSIS COMPLETE
                   </div>
-
                 </div>
 
                 <div className="assessment-divider" />
 
                 <div className="assessment-meta">
-
                   <div>
                     <span>Target Type</span>
                     <strong>
@@ -836,7 +1198,8 @@ function App() {
                     <span>Verdict</span>
                     <strong>
                       {formatVerdict(
-                        scanResult.risk_assessment?.verdict
+                        scanResult.risk_assessment
+                          ?.verdict
                       )}
                     </strong>
                   </div>
@@ -847,11 +1210,9 @@ function App() {
                       {scanResult.risk_score}/100
                     </strong>
                   </div>
-
                 </div>
 
                 <div className="assessment-summary">
-
                   <div className="summary-heading">
                     <Shield size={16} />
                     <strong>ENGINE ANALYSIS</strong>
@@ -862,21 +1223,232 @@ function App() {
                   </div>
 
                   <p>
-                    {scanResult.risk_assessment?.explanation}
+                    {
+                      scanResult.risk_assessment
+                        ?.explanation
+                    }
                   </p>
-
                 </div>
-
               </div>
-
             </div>
 
-            <div className="lower-grid">
-
-              <div className="panel">
-
+            <div className="intel-overview-grid">
+              <div className="panel live-signal-panel">
                 <div className="panel-header">
+                  <div className="panel-title">
+                    <div className="panel-icon intel">
+                      <Radio size={16} />
+                    </div>
 
+                    <div>
+                      <h4>LIVE THREAT SIGNAL</h4>
+                      <span>
+                        Observed from returned scan data
+                      </span>
+                    </div>
+                  </div>
+
+                  <span className="signal-live-dot">
+                    ● LIVE
+                  </span>
+                </div>
+
+                <div className="signal-grid">
+                  <div>
+                    <span>SIGNALS DETECTED</span>
+                    <strong>{localSignals}</strong>
+                  </div>
+
+                  <div>
+                    <span>INTELLIGENCE SOURCES</span>
+                    <strong>
+                      {availableIntel.length}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>LOCAL INDICATORS</span>
+                    <strong>{localSignals}</strong>
+                  </div>
+
+                  <div>
+                    <span>CONFIDENCE</span>
+                    <strong>
+                      {scanResult.risk_assessment
+                        ?.confidence ||
+                        "Not reported"}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="panel url-dna-panel">
+                <div className="panel-header">
+                  <div className="panel-title">
+                    <div className="panel-icon intel">
+                      <Link2 size={16} />
+                    </div>
+
+                    <div>
+                      <h4>URL DNA / FORENSICS</h4>
+                      <span>
+                        Structural decomposition of analyzed
+                        target
+                      </span>
+                    </div>
+                  </div>
+
+                  <span className="panel-count">
+                    {urlParts.length}
+                  </span>
+                </div>
+
+                <div className="url-dna-grid">
+                  {urlParts.map((part) => (
+                    <div
+                      className="dna-cell"
+                      key={part.key}
+                    >
+                      <div>
+                        <span>{part.key}</span>
+                        <b>{part.status}</b>
+                      </div>
+
+                      <strong title={part.value}>
+                        {part.value}
+                      </strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="telemetry-panel panel">
+              <div className="telemetry-header">
+                <div>
+                  <span className="card-label">
+                    ANALYSIS TELEMETRY
+                  </span>
+
+                  <h4>
+                    Signal Correlation Matrix
+                  </h4>
+                </div>
+
+                <span>
+                  DERIVED FROM RETURNED DATA
+                </span>
+              </div>
+
+              <div className="telemetry-grid">
+                {telemetry.map((item) => (
+                  <div
+                    className="telemetry-item"
+                    key={item.label}
+                  >
+                    <div className="telemetry-meta">
+                      <span>{item.label}</span>
+
+                      <strong>
+                        {item.value === null
+                          ? "—"
+                          : item.value}
+                        {item.suffix === "%"
+                          ? "%"
+                          : ""}
+                      </strong>
+                    </div>
+
+                    <div className="telemetry-track">
+                      <span
+                        style={{
+                          width: `${item.width}%`,
+                        }}
+                      />
+                    </div>
+
+                    <small>
+                      {item.suffix === "%"
+                        ? "CONFIDENCE VALUE"
+                        : item.suffix}
+                    </small>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="trace-toggle-wrap">
+              <button
+                type="button"
+                className="trace-toggle"
+                onClick={() =>
+                  setTraceOpen((open) => !open)
+                }
+              >
+                <Terminal size={15} />
+
+                {traceOpen
+                  ? "HIDE ANALYSIS TRACE"
+                  : "VIEW ANALYSIS TRACE"}
+
+                <span>
+                  {traceOpen ? "−" : "+"}
+                </span>
+              </button>
+            </div>
+
+            {traceOpen && (
+              <div className="analysis-trace panel">
+                <div className="trace-header">
+                  <div>
+                    <span className="card-label">
+                      THREAT REPLAY / ANALYSIS TRACE
+                    </span>
+
+                    <h4>Analysis Workflow</h4>
+                  </div>
+
+                  <span>
+                    VISUAL WORKFLOW · NOT BACKEND TELEMETRY
+                  </span>
+                </div>
+
+                <div className="trace-pipeline">
+                  {[
+                    "TARGET RECEIVED",
+                    "URL NORMALIZATION",
+                    "STRUCTURAL ANALYSIS",
+                    "LOCAL RULE ENGINE",
+                    "THREAT INTELLIGENCE",
+                    "SIGNAL CORRELATION",
+                    "RISK SCORING",
+                    "FINAL VERDICT",
+                  ].map((node, index) => (
+                    <div
+                      className={`trace-node ${
+                        index <= traceStage
+                          ? "active"
+                          : ""
+                      }`}
+                      key={node}
+                    >
+                      <span className="trace-node-index">
+                        {String(index + 1).padStart(
+                          2,
+                          "0"
+                        )}
+                      </span>
+
+                      <strong>{node}</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="lower-grid">
+              <div className="panel">
+                <div className="panel-header">
                   <div className="panel-title">
                     <div className="panel-icon warning">
                       <AlertTriangle size={16} />
@@ -884,6 +1456,7 @@ function App() {
 
                     <div>
                       <h4>Local Findings</h4>
+
                       <span>
                         URL-level threat indicators
                       </span>
@@ -893,21 +1466,16 @@ function App() {
                   <span className="panel-count">
                     {scanResult.findings?.length || 0}
                   </span>
-
                 </div>
 
                 {scanResult.findings?.length ? (
-
                   <div className="findings-list">
-
                     {scanResult.findings.map(
                       (finding, index) => (
-
                         <div
-                          className="finding"
+                          className={`finding finding-${index}`}
                           key={`${finding.rule}-${index}`}
                         >
-
                           <div className="finding-index">
                             {String(index + 1).padStart(
                               2,
@@ -916,7 +1484,11 @@ function App() {
                           </div>
 
                           <div className="finding-icon">
-                            <AlertTriangle size={16} />
+                            {Number(finding.score) > 0 ? (
+                              <AlertTriangle size={16} />
+                            ) : (
+                              <CheckCircle2 size={16} />
+                            )}
                           </div>
 
                           <div className="finding-content">
@@ -932,17 +1504,12 @@ function App() {
                           <span className="finding-score">
                             +{finding.score}
                           </span>
-
                         </div>
                       )
                     )}
-
                   </div>
-
                 ) : (
-
                   <div className="empty-state">
-
                     <CheckCircle2 size={22} />
 
                     <div>
@@ -955,16 +1522,12 @@ function App() {
                         URL-level threats.
                       </span>
                     </div>
-
                   </div>
                 )}
-
               </div>
 
               <div className="panel">
-
                 <div className="panel-header">
-
                   <div className="panel-title">
                     <div className="panel-icon intel">
                       <Radio size={16} />
@@ -972,6 +1535,7 @@ function App() {
 
                     <div>
                       <h4>Threat Intelligence</h4>
+
                       <span>
                         External intelligence providers
                       </span>
@@ -980,24 +1544,20 @@ function App() {
 
                   <span className="panel-count">
                     {scanResult.intelligence?.filter(
-                      (provider) => provider.available
+                      (provider) =>
+                        provider.available
                     ).length || 0}
                   </span>
-
                 </div>
 
                 <div className="intel-list">
-
                   {scanResult.intelligence?.map(
                     (provider) => (
-
                       <div
                         className="intel-row"
                         key={provider.provider}
                       >
-
                         <div className="intel-provider">
-
                           <div
                             className={`intel-icon ${
                               provider.available
@@ -1007,7 +1567,6 @@ function App() {
                                 : "unavailable"
                             }`}
                           >
-
                             {provider.available ? (
                               provider.malicious ? (
                                 <ShieldAlert size={16} />
@@ -1017,7 +1576,6 @@ function App() {
                             ) : (
                               <XCircle size={16} />
                             )}
-
                           </div>
 
                           <div>
@@ -1033,11 +1591,9 @@ function App() {
                                 : "Provider unavailable"}
                             </span>
                           </div>
-
                         </div>
 
                         <div className="intel-result">
-
                           <span className="intel-score">
                             {provider.score !== null &&
                             provider.score !== undefined
@@ -1048,28 +1604,20 @@ function App() {
                           <span className="intel-label">
                             SCORE
                           </span>
-
                         </div>
-
                       </div>
                     )
                   )}
-
                 </div>
-
               </div>
-
             </div>
-
           </section>
         )}
 
         {/* ================= HISTORY ================= */}
 
         <section className="history-section">
-
           <div className="section-heading">
-
             <div>
               <span className="eyebrow">
                 03 / INTELLIGENCE DATABASE
@@ -1083,44 +1631,42 @@ function App() {
               onClick={loadHistory}
               type="button"
             >
-              <History size={14} />
-              REFRESH DATABASE
-            </button>
+              <History
+                className={
+                  historyLoading
+                    ? "refresh-spinning"
+                    : ""
+                }
+                size={14}
+              />
 
+              {historyLoading
+                ? "REFRESHING DATABASE"
+                : "REFRESH DATABASE"}
+            </button>
           </div>
 
           <div className="history-card">
-
             {historyLoading ? (
-
               <div className="history-empty">
                 <span className="loading-dot" />
                 Querying intelligence database...
               </div>
-
             ) : history.length === 0 ? (
-
               <div className="history-empty">
-
                 <History size={22} />
 
                 <div>
-                  <strong>
-                    NO SCAN RECORDS
-                  </strong>
+                  <strong>NO SCAN RECORDS</strong>
 
                   <span>
-                    Completed URL assessments will
-                    appear in this database.
+                    Completed URL assessments will appear
+                    in this database.
                   </span>
                 </div>
-
               </div>
-
             ) : (
-
               <div className="history-table">
-
                 <div className="history-header">
                   <span>Target</span>
                   <span>Risk</span>
@@ -1130,16 +1676,16 @@ function App() {
                 </div>
 
                 {history.map((record) => (
-
                   <button
-                    className="history-row"
+                    className={`history-row ${
+                      record.local ? "history-row-local" : ""
+                    }`}
                     key={record.id}
                     onClick={() =>
                       openHistoryItem(record.id)
                     }
                     type="button"
                   >
-
                     <span className="history-target">
                       <Link2 size={14} />
                       {record.target}
@@ -1158,7 +1704,9 @@ function App() {
                     </span>
 
                     <span className="history-confidence">
-                      {formatRiskLevel(record.confidence)}
+                      {formatRiskLevel(
+                        record.confidence
+                      )}
                     </span>
 
                     <span className="history-time">
@@ -1168,35 +1716,27 @@ function App() {
                         record.created_at
                       ).toLocaleString()}
                     </span>
-
                   </button>
                 ))}
-
               </div>
             )}
-
           </div>
-
         </section>
-
       </main>
 
       {/* ================= HISTORY MODAL ================= */}
 
       {selectedScan && (
-
         <div
           className="modal-backdrop"
           onClick={() => setSelectedScan(null)}
         >
-
           <div
             className={`history-modal ${selectedRiskClass}`}
             onClick={(event) =>
               event.stopPropagation()
             }
           >
-
             <div className="modal-scan-line" />
 
             <div className="modal-corner corner-tl" />
@@ -1205,9 +1745,7 @@ function App() {
             <div className="modal-corner corner-br" />
 
             <div className="modal-header">
-
               <div>
-
                 <div className="modal-system-label">
                   <span />
                   FRAUDLENS-X / SECURE RECORD
@@ -1217,8 +1755,7 @@ function App() {
                   RECORD / #{selectedScan.id}
                 </span>
 
-                <h3>Scan Details</h3>
-
+                <h3>Intelligence Record</h3>
               </div>
 
               <button
@@ -1231,17 +1768,16 @@ function App() {
               >
                 <X size={19} />
               </button>
-
             </div>
 
             <div className="modal-target">
-
               <div className="modal-target-icon">
                 <Link2 size={18} />
               </div>
 
               <div>
                 <span>ANALYZED TARGET</span>
+
                 <strong>
                   {selectedScan.target}
                 </strong>
@@ -1249,15 +1785,12 @@ function App() {
 
               <div className="modal-target-status">
                 <Wifi size={14} />
-                VERIFIED
+                RECORDED
               </div>
-
             </div>
 
             <div className="modal-main-grid">
-
               <div className="modal-score-display">
-
                 <span>THREAT INDEX</span>
 
                 <div
@@ -1278,6 +1811,7 @@ function App() {
                     <strong>
                       {selectedScan.risk_score}
                     </strong>
+
                     <span>/100</span>
                   </div>
                 </div>
@@ -1289,63 +1823,69 @@ function App() {
                     level={selectedScan.risk_level}
                     size={15}
                   />
+
                   {formatRiskLevel(
                     selectedScan.risk_level
                   )}
                 </div>
-
               </div>
 
               <div className="modal-stats">
-
                 <div className="modal-stat">
                   <span>RISK SCORE</span>
+
                   <strong>
                     {selectedScan.risk_score}/100
                   </strong>
+
                   <small>THREAT INDEX</small>
                 </div>
 
                 <div className="modal-stat">
                   <span>RISK LEVEL</span>
+
                   <strong>
                     {formatRiskLevel(
                       selectedScan.risk_level
                     )}
                   </strong>
+
                   <small>CLASSIFICATION</small>
                 </div>
 
                 <div className="modal-stat">
                   <span>CONFIDENCE</span>
+
                   <strong>
                     {formatRiskLevel(
                       selectedScan.confidence
                     )}
                   </strong>
+
                   <small>ENGINE CONFIDENCE</small>
                 </div>
 
                 <div className="modal-stat">
                   <span>VERDICT</span>
+
                   <strong>
                     {formatVerdict(
                       selectedScan.verdict
                     )}
                   </strong>
+
                   <small>FINAL ASSESSMENT</small>
                 </div>
-
               </div>
-
             </div>
 
             <div className="modal-terminal">
-
               <div className="modal-terminal-header">
                 <Terminal size={14} />
+
                 <span>
-                  fraudlens://records/{selectedScan.id}
+                  fraudlens://records/
+                  {selectedScan.id}
                 </span>
 
                 <span className="modal-terminal-live">
@@ -1355,12 +1895,13 @@ function App() {
               </div>
 
               <div className="modal-terminal-body">
-
                 <div>
                   <span className="terminal-prefix">
                     $
                   </span>
+
                   assessment.status
+
                   <strong>COMMITTED</strong>
                 </div>
 
@@ -1368,7 +1909,9 @@ function App() {
                   <span className="terminal-prefix">
                     $
                   </span>
+
                   intelligence.database
+
                   <strong>UPDATED</strong>
                 </div>
 
@@ -1376,16 +1919,15 @@ function App() {
                   <span className="terminal-prefix">
                     $
                   </span>
+
                   security.channel
+
                   <strong>ENCRYPTED</strong>
                 </div>
-
               </div>
-
             </div>
 
             <div className="modal-footer">
-
               <CheckCircle2 size={15} />
 
               <span>
@@ -1396,14 +1938,10 @@ function App() {
               <span className="modal-footer-id">
                 ID #{selectedScan.id}
               </span>
-
             </div>
-
           </div>
-
         </div>
       )}
-
     </div>
   );
 }
