@@ -20,6 +20,7 @@ from app.services.threat_intelligence.base import (
 from app.services.threat_intelligence.registry import (
     get_url_threat_intel_providers,
 )
+from app.services.url_normalizer import normalize_url_target
 
 
 def scan_url_target(
@@ -29,6 +30,10 @@ def scan_url_target(
     """
     Run the complete URL scanning pipeline.
     """
+
+    # Normalize once at the boundary so every analyzer/provider sees the
+    # exact same canonical HTTP(S) target.
+    target = normalize_url_target(target)
 
     # 1. Local URL analysis.
     local_score, findings = analyze_url(target)

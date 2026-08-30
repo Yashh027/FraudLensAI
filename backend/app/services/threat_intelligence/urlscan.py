@@ -41,7 +41,7 @@ class URLScanProvider:
             )
 
         headers = {
-            "API-Key": api_key,
+            "api-key": api_key,
             "Content-Type": "application/json",
             "User-Agent": "FraudLensAI/1.0",
         }
@@ -63,8 +63,6 @@ class URLScanProvider:
             if not response.ok:
                 print("URLSCAN STATUS:", response.status_code)
                 print("URLSCAN RESPONSE:", response.text)
-
-            response.raise_for_status()
 
             response.raise_for_status()
 
@@ -94,7 +92,7 @@ class URLScanProvider:
                 result_response = requests.get(
                     result_url,
                     headers={
-                        "API-Key": api_key,
+                        "api-key": api_key,
                         "User-Agent": "FraudLensAI/1.0",
                     },
                     timeout=self.timeout,

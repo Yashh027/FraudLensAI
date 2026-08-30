@@ -8,6 +8,7 @@ from app.models.scan import (
 )
 from app.models.scan_history import ScanHistory
 from app.services.scan_engine import scan_url_target
+from app.services.url_normalizer import normalize_url_target
 
 
 router = APIRouter(
@@ -24,13 +25,13 @@ async def scan_url(
     request: ScanRequest,
     db: Session = Depends(get_db),
 ):
-    target = request.target.strip()
-
-    if not target:
+    try:
+        target = normalize_url_target(request.target)
+    except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail="Target cannot be empty.",
-        )
+            detail=str(exc),
+        ) from exc
 
     # Run the existing scan engine.
     response = scan_url_target(

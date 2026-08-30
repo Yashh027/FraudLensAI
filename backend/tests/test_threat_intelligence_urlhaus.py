@@ -5,6 +5,7 @@ from app.services.threat_intelligence.registry import (
 )
 from app.services.threat_intelligence.urlhaus import URLhausProvider
 from app.services.threat_intelligence.virustotal import VirusTotalProvider
+from app.services.threat_intelligence.urlscan import URLScanProvider
 
 
 class FakeResponse:
@@ -23,7 +24,8 @@ class FakeResponse:
 
 
 def test_urlhaus_malicious_result(monkeypatch):
-    def fake_post(endpoint, data, timeout):
+    monkeypatch.setenv("URLHAUS_API_KEY", "test-key")
+    def fake_post(endpoint, headers, data, timeout):
         return FakeResponse({"query_status": "ok"})
 
     monkeypatch.setattr(
@@ -41,7 +43,8 @@ def test_urlhaus_malicious_result(monkeypatch):
 
 
 def test_urlhaus_no_results_is_not_claimed_safe(monkeypatch):
-    def fake_post(endpoint, data, timeout):
+    monkeypatch.setenv("URLHAUS_API_KEY", "test-key")
+    def fake_post(endpoint, headers, data, timeout):
         return FakeResponse({"query_status": "no_results"})
 
     monkeypatch.setattr(
@@ -58,7 +61,8 @@ def test_urlhaus_no_results_is_not_claimed_safe(monkeypatch):
 
 
 def test_urlhaus_unavailable_result(monkeypatch):
-    def fake_post(endpoint, data, timeout):
+    monkeypatch.setenv("URLHAUS_API_KEY", "test-key")
+    def fake_post(endpoint, headers, data, timeout):
         raise requests.RequestException("timeout")
 
     monkeypatch.setattr(
@@ -75,7 +79,8 @@ def test_urlhaus_unavailable_result(monkeypatch):
 
 
 def test_urlhaus_invalid_json_result(monkeypatch):
-    def fake_post(endpoint, data, timeout):
+    monkeypatch.setenv("URLHAUS_API_KEY", "test-key")
+    def fake_post(endpoint, headers, data, timeout):
         return FakeResponse(json_error=ValueError("invalid json"))
 
     monkeypatch.setattr(
@@ -93,8 +98,10 @@ def test_urlhaus_invalid_json_result(monkeypatch):
 def test_provider_registry_contains_urlhaus_and_virustotal_providers():
     providers = get_url_threat_intel_providers()
 
-    assert len(providers) == 2
+    assert len(providers) == 3
     assert providers[0].name == "URLhaus"
     assert providers[1].name == "VirusTotal"
+    assert providers[2].name == "urlscan.io"
     assert isinstance(providers[0], URLhausProvider)
     assert isinstance(providers[1], VirusTotalProvider)
+    assert isinstance(providers[2], URLScanProvider)

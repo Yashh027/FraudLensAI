@@ -1,8 +1,13 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 
-from app.api.routes.scan import router as scan_router
+# Uvicorn does not automatically load a project .env file. Load the backend
+# configuration explicitly so the threat-intelligence API keys are available
+# to the provider classes in every launch directory.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from app.api.routes.scan import router as scan_router
 from app.api.routes.history import router as history_router

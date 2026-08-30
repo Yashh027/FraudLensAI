@@ -182,7 +182,7 @@ function confidencePercent(value) {
 }
 
 function App() {
-  const [target, setTarget] = useState("https://");
+  const [target, setTarget] = useState("");
   const [scanResult, setScanResult] = useState(null);
   const [history, setHistory] = useState([]);
   const [selectedScan, setSelectedScan] = useState(null);
@@ -193,6 +193,7 @@ function App() {
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [uptime, setUptime] = useState(99.98);
+  const [showIntro, setShowIntro] = useState(true);
 
   const [scanStage, setScanStage] = useState(0);
   const [scanProgress, setScanProgress] = useState(0);
@@ -277,6 +278,10 @@ function App() {
   useEffect(() => {
     window.history.scrollRestoration = "manual";
 
+    const introTimer = setTimeout(() => {
+      setShowIntro(false);
+    }, 1850);
+
     window.scrollTo({
       top: 0,
       left: 0,
@@ -304,6 +309,7 @@ function App() {
     }, 4000);
 
     return () => {
+      clearTimeout(introTimer);
       clearTimeout(forceTop);
       clearInterval(interval);
     };
@@ -468,8 +474,8 @@ function App() {
       setScanProgress(100);
       setScanResult(data);
 
-      // Keep the input ready for the next scan with https:// pre-written.
-      setTarget("https://");
+      // Clear the visible URL field after a completed scan.
+      setTarget("");
 
       // The scan endpoint has already committed the record to PostgreSQL
       // before returning. Show it immediately even if the separate history
@@ -613,7 +619,27 @@ function App() {
   ];
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${showIntro ? "intro-active" : "intro-complete"}`}>
+      {showIntro && (
+        <div className="boot-sequence" aria-hidden="true">
+          <div className="boot-grid" />
+          <div className="boot-scanline" />
+          <div className="boot-core">
+            <div className="boot-ring boot-ring-one" />
+            <div className="boot-ring boot-ring-two" />
+            <div className="boot-ring boot-ring-three" />
+            <div className="boot-shield"><Shield size={42} /></div>
+          </div>
+          <div className="boot-brand">
+            <strong>FRAUD<span>LENS</span><sup>AI</sup></strong>
+            <small>THREAT INTELLIGENCE PLATFORM</small>
+          </div>
+          <div className="boot-status">
+            <span /> SYSTEM INITIALIZING <b>FRAUDLENS-X</b>
+          </div>
+        </div>
+      )}
+
       {/* ================= BACKGROUND SYSTEM ================= */}
 
       <div className="ambient-grid" />
@@ -830,10 +856,6 @@ function App() {
 
                 <Link2 size={18} />
 
-                <span className="url-prefix" aria-hidden="true">
-                  https://
-                </span>
-
                 <input
                   type="text"
                   value={target.replace(/^https?:\/\//i, "")}
@@ -842,10 +864,10 @@ function App() {
                       .replace(/^https?:\/\//i, "")
                       .trimStart();
 
-                    // HTTPS is rendered as a fixed, non-editable prefix.
-                    // Only the URL remainder is stored in the editable field,
-                    // which prevents the browser caret from corrupting `https://`.
-                    setTarget(`https://${value}`);
+                    // Keep the protocol out of the visible input.
+                    // Internally we still store a normalized HTTPS URL so the
+                    // backend always receives a complete URL.
+                    setTarget(value ? `https://${value}` : "");
                   }}
                   placeholder="example.com/..."
                   disabled={loading}
@@ -857,7 +879,7 @@ function App() {
                   <button
                     type="button"
                     className="input-clear"
-                    onClick={() => setTarget("https://")}
+                    onClick={() => setTarget("")}
                   >
                     <X size={15} />
                   </button>
