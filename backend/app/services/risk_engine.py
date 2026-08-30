@@ -3,7 +3,12 @@ from collections.abc import Sequence
 from app.services.threat_intelligence.base import ThreatIntelResult
 
 
-def calculate_risk(local_score: int, provider_results: Sequence[ThreatIntelResult]) -> tuple[int, str, str, str, str]:
+def calculate_risk(
+    local_score: int,
+    provider_results: Sequence[ThreatIntelResult],
+    infrastructure_score: int = 0,
+    infrastructure_signals: Sequence[dict] | None = None,
+) -> tuple[int, str, str, str, str]:
     """Calculate a deterministic risk score from independent evidence.
 
     The score is intentionally conservative: a single weak provider signal is
@@ -12,6 +17,8 @@ def calculate_risk(local_score: int, provider_results: Sequence[ThreatIntelResul
     evidence. Multiple independent malicious providers can confirm the result.
     """
     local_score = clamp_score(local_score)
+    infrastructure_score = clamp_score(infrastructure_score)
+    infrastructure_signals = list(infrastructure_signals or [])
     available_results = [r for r in provider_results if r.available]
     scored_results = [r for r in available_results if r.score is not None]
 
@@ -26,7 +33,7 @@ def calculate_risk(local_score: int, provider_results: Sequence[ThreatIntelResul
 
     # Start with the strongest independent signal. Supporting evidence gets a
     # small bounded boost instead of being blindly added together.
-    risk_score = max(local_score, strongest_provider_score)
+    risk_score = max(local_score + infrastructure_score, strongest_provider_score)
 
     supporting_scores = sorted(provider_scores, reverse=True)[1:]
     if supporting_scores:
@@ -69,6 +76,8 @@ def calculate_risk(local_score: int, provider_results: Sequence[ThreatIntelResul
         scored_results,
         risk_score,
         confidence,
+        infrastructure_score,
+        infrastructure_signals,
     )
 
     return risk_score, risk_level, confidence, verdict, explanation
@@ -147,11 +156,17 @@ def build_explanation(
     scored_results: Sequence[ThreatIntelResult],
     risk_score: int,
     confidence: str,
+    infrastructure_score: int = 0,
+    infrastructure_signals: Sequence[dict] | None = None,
 ) -> str:
     parts: list[str] = []
+    infrastructure_signals = list(infrastructure_signals or [])
 
     if local_score > 0:
         parts.append(f"Local analysis produced a risk score of {local_score}/100.")
+
+    if infrastructure_score > 0:
+        parts.append(f"Domain and infrastructure intelligence added {infrastructure_score} risk points from {len([s for s in infrastructure_signals if int(s.get("score", 0) or 0) > 0])} infrastructure signal(s).")
 
     if scored_results:
         strongest = max(clamp_score(r.score) for r in scored_results if r.score is not None)
@@ -179,6 +194,12 @@ def build_explanation(
         )
     else:
         parts.append("No usable threat-intelligence provider result was available.")
+
+    if infrastructure_signals:
+        active = [s for s in infrastructure_signals if int(s.get("score", 0) or 0) > 0]
+        if active:
+            labels = ", ".join(str(s.get("rule", "infrastructure signal")) for s in active)
+            parts.append(f"Relevant infrastructure findings: {labels}.")
 
     parts.append(f"Final evidence score: {risk_score}/100 with {confidence} confidence.")
     return " ".join(parts)

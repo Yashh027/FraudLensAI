@@ -36,6 +36,7 @@ async def scan_url(
     # Run the existing scan engine.
     response = scan_url_target(
         target=target,
+        enrich_domain=True,
     )
 
     # Save the important result to PostgreSQL.

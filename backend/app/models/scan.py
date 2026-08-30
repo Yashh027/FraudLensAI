@@ -28,6 +28,12 @@ class DomainInfo(BaseModel):
     domain: Optional[str] = None
     subdomain: Optional[str] = None
     tld: Optional[str] = None
+    registration: dict = Field(default_factory=dict)
+    dns: dict = Field(default_factory=dict)
+    infrastructure: dict = Field(default_factory=dict)
+    risk_signals: List[dict] = Field(default_factory=list)
+    data_sources: List[str] = Field(default_factory=list)
+    lookup_status: str = "unavailable"
 
 
 class ReputationInfo(BaseModel):
@@ -55,6 +61,14 @@ class RiskAssessment(BaseModel):
     explanation: str
 
 
+class URLComponent(BaseModel):
+    key: str
+    value: str
+    status: str
+    suspicious: bool = False
+    reason: Optional[str] = None
+
+
 class ScanResponse(BaseModel):
     target: str
     target_type: str
@@ -63,6 +77,7 @@ class ScanResponse(BaseModel):
     risk_level: str
 
     findings: List[Finding]
+    url_components: List[URLComponent] = Field(default_factory=list)
     recommendation: str
 
     domain_info: Optional[DomainInfo] = None

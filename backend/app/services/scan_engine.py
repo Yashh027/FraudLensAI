@@ -2,6 +2,7 @@ from collections.abc import Sequence
 
 from app.analyzers.url_analyzer import (
     analyze_url,
+    decompose_url,
     get_recommendation,
 )
 from app.models.scan import (
@@ -11,7 +12,7 @@ from app.models.scan import (
     ScanResponse,
     ThreatIntelligenceInfo,
 )
-from app.services.domain_intelligence import extract_domain_info
+from app.services.domain_intelligence import extract_domain_info, enrich_domain_info
 from app.services.risk_engine import calculate_risk
 from app.services.threat_intelligence.base import (
     ThreatIntelProvider,
@@ -27,6 +28,7 @@ from urllib.parse import urlparse
 def scan_url_target(
     target: str,
     providers: Sequence[ThreatIntelProvider] | None = None,
+    enrich_domain: bool = False,
 ) -> ScanResponse:
     """
     Run the complete URL scanning pipeline.
@@ -40,9 +42,13 @@ def scan_url_target(
     local_score, findings = analyze_url(target)
 
     # 2. Domain intelligence.
-    domain_info = DomainInfo(
-        **extract_domain_info(target)
-    )
+    domain_info_data = extract_domain_info(target)
+    if enrich_domain:
+        domain_info_data = enrich_domain_info(domain_info_data)
+    domain_info = DomainInfo(**domain_info_data)
+
+    url_components = decompose_url(target)
+    infrastructure_score = sum(int(signal.get("score", 0) or 0) for signal in domain_info.risk_signals)
 
     # 3. External threat-intelligence providers.
     provider_results = collect_url_threat_intelligence(
@@ -86,6 +92,8 @@ def scan_url_target(
     ) = calculate_risk(
         local_score=local_score,
         provider_results=provider_results,
+        infrastructure_score=infrastructure_score,
+        infrastructure_signals=domain_info.risk_signals,
     )
 
     risk_assessment = RiskAssessment(
@@ -103,7 +111,8 @@ def scan_url_target(
         risk_score=final_score,
         risk_level=risk_level,
         findings=findings,
-        recommendation=get_recommendation(risk_level),
+        url_components=url_components,
+        recommendation=get_recommendation(risk_level, findings, verdict),
         domain_info=domain_info,
         reputation=reputation,
         intelligence=intelligence,

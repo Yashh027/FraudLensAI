@@ -7,6 +7,7 @@ import {
   Clock3,
   Copy,
   Database,
+  Globe2,
   History,
   Link2,
   Radio,
@@ -562,10 +563,26 @@ function App() {
   const activeScanTarget =
     scanResult?.target || target;
 
-  const urlParts = useMemo(
-    () => parseTargetParts(activeScanTarget),
-    [activeScanTarget]
-  );
+  const urlParts = useMemo(() => {
+    if (scanResult?.url_components?.length) {
+      return scanResult.url_components;
+    }
+    return parseTargetParts(activeScanTarget);
+  }, [scanResult, activeScanTarget]);
+
+  const domainInfo = scanResult?.domain_info || {};
+  const registration = domainInfo.registration || {};
+  const dns = domainInfo.dns || {};
+  const infrastructure = domainInfo.infrastructure || {};
+  const infrastructureSignals = domainInfo.risk_signals || [];
+  const activeLocalFindings = scanResult?.findings || [];
+  const activeIntel = scanResult?.intelligence || [];
+
+  function humanizeRule(rule) {
+    return String(rule || "finding")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+  }
 
   const intelProviders =
     scanResult?.intelligence || [];
@@ -1254,6 +1271,71 @@ function App() {
               </div>
             </div>
 
+            <div className="explainability-panel panel">
+              <div className="panel-header">
+                <div className="panel-title">
+                  <div className={`panel-icon ${riskClass === "low" ? "safe" : "warning"}`}>
+                    <Shield size={16} />
+                  </div>
+                  <div>
+                    <h4>Why is this dangerous?</h4>
+                    <span>Evidence-backed explanation of the final assessment</span>
+                  </div>
+                </div>
+                <span className={`explain-verdict ${riskClass}`}>
+                  {formatVerdict(scanResult.risk_assessment?.verdict)}
+                </span>
+              </div>
+
+              <div className="explain-grid">
+                <div className="explain-column">
+                  <span className="explain-kicker">01 / LOCAL SIGNALS</span>
+                  <strong>{activeLocalFindings.length ? `${activeLocalFindings.length} detected` : "None detected"}</strong>
+                  {activeLocalFindings.length ? (
+                    <ul>
+                      {activeLocalFindings.map((finding) => (
+                        <li key={finding.rule}>
+                          <span>{humanizeRule(finding.rule)}</span>
+                          <b>+{finding.score}</b>
+                          <small>{finding.description}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>No significant URL-level characteristics increased local risk.</p>
+                  )}
+                </div>
+
+                <div className="explain-column">
+                  <span className="explain-kicker">02 / THREAT INTELLIGENCE</span>
+                  <strong>{availableIntel.length ? `${availableIntel.length} source${availableIntel.length === 1 ? "" : "s"} available` : "No sources available"}</strong>
+                  {availableIntel.length ? (
+                    <ul>
+                      {activeIntel.map((provider) => (
+                        <li key={provider.provider}>
+                          <span>{provider.provider}</span>
+                          <b>{provider.available ? (provider.malicious ? "MALICIOUS" : `${provider.score ?? 0}/100`) : "UNAVAILABLE"}</b>
+                          <small>{provider.details}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>External intelligence was unavailable, so the final assessment relies on local evidence only.</p>
+                  )}
+                </div>
+
+                <div className="explain-column final-column">
+                  <span className="explain-kicker">03 / FINAL ASSESSMENT</span>
+                  <strong>{riskScore}/100 · {formatRiskLevel(scanResult.risk_level)}</strong>
+                  <p>{scanResult.risk_assessment?.explanation || "No explanation was returned by the assessment engine."}</p>
+                  <div className="recommendation-box">
+                    <span>RECOMMENDATION</span>
+                    <p>{scanResult.recommendation}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div className="intel-overview-grid">
               <div className="panel live-signal-panel">
                 <div className="panel-header">
@@ -1289,8 +1371,8 @@ function App() {
                   </div>
 
                   <div>
-                    <span>LOCAL INDICATORS</span>
-                    <strong>{localSignals}</strong>
+                    <span>INFRA SIGNALS</span>
+                    <strong>{infrastructureSignals.filter((signal) => Number(signal.score) > 0).length}</strong>
                   </div>
 
                   <div>
@@ -1328,7 +1410,7 @@ function App() {
                 <div className="url-dna-grid">
                   {urlParts.map((part) => (
                     <div
-                      className="dna-cell"
+                      className={`dna-cell ${part.suspicious ? "dna-cell-suspicious" : ""}`}
                       key={part.key}
                     >
                       <div>
@@ -1339,8 +1421,77 @@ function App() {
                       <strong title={part.value}>
                         {part.value}
                       </strong>
+
+                      {part.suspicious && part.reason && (
+                        <small className="dna-warning">{part.reason}</small>
+                      )}
                     </div>
                   ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="domain-intel-grid">
+              <div className="panel domain-intelligence-panel">
+                <div className="panel-header">
+                  <div className="panel-title">
+                    <div className="panel-icon intel"><Globe2 size={16} /></div>
+                    <div>
+                      <h4>DOMAIN INTELLIGENCE</h4>
+                      <span>Passive registration and infrastructure context</span>
+                    </div>
+                  </div>
+                  <span className="panel-count">{domainInfo.lookup_status === "complete" ? "LIVE" : "PARTIAL"}</span>
+                </div>
+                <div className="domain-facts">
+                  <div><span>REGISTERED DOMAIN</span><strong>{domainInfo.domain || "—"}</strong></div>
+                  <div><span>SUBDOMAIN</span><strong>{domainInfo.subdomain || "NONE"}</strong></div>
+                  <div><span>TLD</span><strong>{domainInfo.tld ? `.${domainInfo.tld}` : "—"}</strong></div>
+                  <div><span>REGISTRAR</span><strong>{registration.registrar || "Not available"}</strong></div>
+                  <div><span>DOMAIN AGE</span><strong>{registration.age_days != null ? `${registration.age_days} days` : "Not available"}</strong></div>
+                  <div><span>IP ADDRESS</span><strong>{(infrastructure.ips || []).join(", ") || "Not resolved"}</strong></div>
+                  <div><span>COUNTRY / LOCATION</span><strong>{[infrastructure.city, infrastructure.region, infrastructure.country].filter(Boolean).join(", ") || "Not available"}</strong></div>
+                  <div><span>ASN / NETWORK</span><strong>{infrastructure.asn ? `AS${infrastructure.asn}${infrastructure.org ? ` · ${infrastructure.org}` : ""}` : "Not available"}</strong></div>
+                  <div><span>ISP / HOSTING</span><strong>{infrastructure.isp || infrastructure.network || "Not available"}</strong></div>
+                  <div><span>NAMESERVERS</span><strong>{(registration.nameservers || []).join(", ") || "Not available"}</strong></div>
+                </div>
+                {infrastructureSignals.length > 0 && (
+                  <div className="infra-signal-list">
+                    {infrastructureSignals.map((signal) => (
+                      <div key={signal.rule} className={`infra-signal ${Number(signal.score) > 0 ? "active" : "neutral"}`}>
+                        <span>{humanizeRule(signal.rule)}</span>
+                        <b>{Number(signal.score) > 0 ? `+${signal.score}` : "INFO"}</b>
+                        <small>{signal.description}</small>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="panel dns-panel">
+                <div className="panel-header">
+                  <div className="panel-title">
+                    <div className="panel-icon intel"><Server size={16} /></div>
+                    <div>
+                      <h4>DNS / INFRASTRUCTURE</h4>
+                      <span>Passive DNS records and resolved infrastructure</span>
+                    </div>
+                  </div>
+                  <span className="panel-count">{Object.values(dns).reduce((count, records) => count + (Array.isArray(records) ? records.length : 0), 0)}</span>
+                </div>
+                <div className="dns-record-grid">
+                  {["A", "AAAA", "MX", "NS"].map((type) => (
+                    <div className="dns-record" key={type}>
+                      <span>{type}</span>
+                      <div>
+                        {(dns[type] || []).length ? (dns[type] || []).map((record) => <code key={record}>{record}</code>) : <small>NO RECORD RETURNED</small>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="data-source-note">
+                  <Wifi size={13} />
+                  <span>{(domainInfo.data_sources || []).join(" · ") || "Passive enrichment unavailable"}</span>
                 </div>
               </div>
             </div>
