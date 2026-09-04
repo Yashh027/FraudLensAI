@@ -142,7 +142,7 @@ Providers run **concurrently** via `ThreadPoolExecutor` and failures are isolate
 
 ## Security Measures
 
-- **Rate limiting** — Sliding-window per-IP limit (default: 30 req/min)
+- **Rate limiting** — Shared Redis-backed sliding-window per-IP limit (default: 30 req/min)
 - **Request size limits** — Max 16 KB request body
 - **CORS** — Configurable allowed origins
 - **SSRF protection** — Blocks localhost, private IPs, metadata endpoints
@@ -190,6 +190,7 @@ See [`backend/.env.example`](backend/.env.example) for all configuration options
 | `URLHAUS_API_KEY` | No | URLhaus API key |
 | `URLSCAN_API_KEY` | No | urlscan.io API key |
 | `ALLOWED_ORIGINS` | No | Comma-separated CORS origins |
+| `REDIS_URL` | Yes for distributed rate limiting | Redis connection string for shared request throttling |
 | `RATE_LIMIT_PER_MINUTE` | No | Max requests per IP per minute |
 | `LOG_LEVEL` | No | DEBUG, INFO, WARNING, ERROR |
 

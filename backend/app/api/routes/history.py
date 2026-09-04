@@ -6,8 +6,9 @@ from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.routes.auth import get_current_user
 from app.database import get_db
-from app.models.scan_history import ScanHistory
+from app.models.scan_history import ScanHistory, User
 from app.services.report_generator import build_security_report
 
 router = APIRouter(prefix="/api/v1/history", tags=["Scan History"])
@@ -46,6 +47,16 @@ def _parse_date_end(value: str | None):
         raise HTTPException(status_code=400, detail=f"Invalid end_date: {value}. Use YYYY-MM-DD.") from exc
 
 
+def _apply_user_filter(statement, current_user: User):
+    """Apply user filter to a query."""
+    return statement.where(ScanHistory.user_id == current_user.id)
+
+
+def _apply_user_filter_count(count_statement, current_user: User):
+    """Apply user filter to a count query."""
+    return count_statement.where(ScanHistory.user_id == current_user.id)
+
+
 @router.get("")
 def get_scan_history(
     limit: int = Query(50, ge=1, le=200),
@@ -56,9 +67,10 @@ def get_scan_history(
     start_date: str | None = Query(None),
     end_date: str | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    statement = select(ScanHistory)
-    count_statement = select(func.count()).select_from(ScanHistory)
+    statement = _apply_user_filter(select(ScanHistory), current_user)
+    count_statement = _apply_user_filter_count(select(func.count()).select_from(ScanHistory), current_user)
     filters = []
 
     if search and search.strip():
@@ -105,12 +117,17 @@ def compare_scans(
     left_id: int = Query(..., ge=1),
     right_id: int = Query(..., ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     if left_id == right_id:
         raise HTTPException(status_code=400, detail="Choose two different scans to compare.")
 
-    left = db.get(ScanHistory, left_id)
-    right = db.get(ScanHistory, right_id)
+    left = db.execute(
+        select(ScanHistory).where(ScanHistory.id == left_id, ScanHistory.user_id == current_user.id)
+    ).scalar_one_or_none()
+    right = db.execute(
+        select(ScanHistory).where(ScanHistory.id == right_id, ScanHistory.user_id == current_user.id)
+    ).scalar_one_or_none()
     if left is None or right is None:
         raise HTTPException(status_code=404, detail="One or both scan records were not found.")
     # Older history rows may predate detailed report storage. They are still
@@ -187,10 +204,16 @@ def compare_scans(
     }
 
 
-
 @router.get("/stats/overview")
-def get_history_stats(db: Session = Depends(get_db)):
-    records = db.execute(select(ScanHistory).order_by(ScanHistory.created_at.desc())).scalars().all()
+def get_history_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    records = db.execute(
+        select(ScanHistory)
+        .where(ScanHistory.user_id == current_user.id)
+        .order_by(ScanHistory.created_at.desc())
+    ).scalars().all()
     total = len(records)
     completed = sum(1 for r in records if (r.status or "completed") == "completed")
     safe = sum(1 for r in records if r.risk_score < 25)
@@ -235,8 +258,14 @@ def get_history_stats(db: Session = Depends(get_db)):
 
 
 @router.get("/{scan_id}/report.pdf")
-def export_security_report(scan_id: int, db: Session = Depends(get_db)):
-    record = db.get(ScanHistory, scan_id)
+def export_security_report(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    record = db.execute(
+        select(ScanHistory).where(ScanHistory.id == scan_id, ScanHistory.user_id == current_user.id)
+    ).scalar_one_or_none()
     if record is None:
         raise HTTPException(status_code=404, detail="Scan history record not found.")
     data = record.report_data if isinstance(record.report_data, dict) else {
@@ -256,9 +285,16 @@ def export_security_report(scan_id: int, db: Session = Depends(get_db)):
         "Cache-Control": "no-store",
     })
 
+
 @router.get("/{scan_id}")
-def get_scan_history_item(scan_id: int, db: Session = Depends(get_db)):
-    record = db.get(ScanHistory, scan_id)
+def get_scan_history_item(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    record = db.execute(
+        select(ScanHistory).where(ScanHistory.id == scan_id, ScanHistory.user_id == current_user.id)
+    ).scalar_one_or_none()
     if record is None:
         raise HTTPException(status_code=404, detail="Scan history record not found.")
 

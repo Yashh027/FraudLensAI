@@ -1,16 +1,17 @@
 import logging
 import os
 import time
-from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.services.rate_limiter import RedisRateLimiter, RedisRateLimitError
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -25,8 +26,8 @@ logger = logging.getLogger("fraudlens")
 
 from app.api.routes.scan import router as scan_router
 from app.api.routes.history import router as history_router
+from app.api.routes.auth import router as auth_router
 from app.database import ensure_phase3_schema, engine
-
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -50,6 +51,17 @@ ALLOWED_ORIGINS = [
     ).split(",") if origin.strip()
 ]
 
+redis_limiter: RedisRateLimiter | None = None
+redis_url = os.getenv("REDIS_URL")
+if redis_url:
+    try:
+        redis_limiter = RedisRateLimiter.from_env()
+    except RedisRateLimitError as exc:
+        logger.warning("Redis rate limiter unavailable: %s", exc)
+        redis_limiter = None
+else:
+    logger.warning("REDIS_URL is not configured; API requests will return 503 until Redis is configured.")
+
 app = FastAPI(
     title="FraudLens AI",
     description="AI-powered fraud detection and intelligence platform for analyzing suspicious digital activity.",
@@ -64,7 +76,6 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
-_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
 _SERVICE_STARTED_AT = time.monotonic()
 
 
@@ -80,21 +91,41 @@ async def reliability_middleware(request: Request, call_next):
             return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header."})
 
     is_health = request.url.path in {"/health", "/health/live"}
+    is_auth = request.url.path.startswith("/api/v1/auth/")
     if request.url.path.startswith("/api/") and not is_health:
-        client = request.client.host if request.client else "unknown"
-        now = time.monotonic()
-        bucket = _rate_buckets[client]
-        while bucket and now - bucket[0] >= 60:
-            bucket.popleft()
-        if len(bucket) >= RATE_LIMIT_PER_MINUTE:
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "detail": "Too many API requests. Please wait a moment and try again.",
-                    "error": "rate_limited",
-                },
-            )
-        bucket.append(now)
+        client_ip = request.client.host if request.client else "unknown"
+        
+        # Skip rate limiting for auth endpoints in development
+        if not is_auth and redis_limiter is None:
+            logger.warning("Rate limiting is unavailable (Redis not configured). Skipping rate limit check for %s.", request.url.path)
+        
+        # Enforce rate limiting only if Redis is available and it's not an auth endpoint
+        if not is_auth and redis_limiter is not None:
+            try:
+                result = redis_limiter.check(client_ip)
+            except RedisRateLimitError as exc:
+                logger.warning("Redis rate limit check failed for %s: %s", client_ip, exc)
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "detail": "Shared rate limiter is temporarily unavailable.",
+                        "error": "rate_limiter_unavailable",
+                    },
+                )
+
+            if not result["allowed"]:
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "detail": "Too many API requests. Please wait a moment and try again.",
+                        "error": "rate_limited",
+                        "limit": result["limit"],
+                        "remaining": result["remaining"],
+                        "retry_after": result["reset_after"],
+                        "window_seconds": result["window_seconds"],
+                    },
+                    headers={"Retry-After": str(result["reset_after"])},
+                )
 
     try:
         response = await call_next(request)
@@ -126,10 +157,11 @@ async def reliability_middleware(request: Request, call_next):
 
 
 ensure_phase3_schema()
-logger.info("FraudLens AI backend starting (log level=%s, rate_limit=%d/min)", LOG_LEVEL, RATE_LIMIT_PER_MINUTE)
+logger.info("FraudLens AI backend starting (log level=%s, rate_limit=%d/min, redis=%s)", LOG_LEVEL, RATE_LIMIT_PER_MINUTE, bool(redis_limiter))
 
 app.include_router(scan_router)
 app.include_router(history_router)
+app.include_router(auth_router)
 
 
 @app.get("/")

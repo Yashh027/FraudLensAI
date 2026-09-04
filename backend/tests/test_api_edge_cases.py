@@ -15,14 +15,33 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.auth import create_access_token, hash_password
 from app.services.threat_intelligence.base import ThreatIntelResult
 from app.database import SessionLocal
-from app.models.scan_history import ScanHistory
+from app.models.scan_history import ScanHistory, User
 from datetime import datetime, UTC
 
 import app.services.scan_engine as scan_engine
 
 client = TestClient(app)
+
+
+def _auth_headers():
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == "api-edge-user@fraudlens.local").first()
+        if user is None:
+            user = User(
+                email="api-edge-user@fraudlens.local",
+                hashed_password=hash_password("api-edge-pass"),
+                is_active=True,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        return {"Authorization": f"Bearer {create_access_token({'sub': str(user.id)})}"}
+    finally:
+        db.close()
 
 
 class FakeProvider:
@@ -43,7 +62,18 @@ def _set_providers(monkeypatch, results):
 def _insert_db(target, score, level, verdict="no_major_threat_indicators", confidence="medium", report=None):
     db = SessionLocal()
     try:
+        user = db.query(User).filter(User.email == "api-edge-user@fraudlens.local").first()
+        if user is None:
+            user = User(
+                email="api-edge-user@fraudlens.local",
+                hashed_password=hash_password("api-edge-pass"),
+                is_active=True,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
         row = ScanHistory(
+            user_id=user.id,
             target=target,
             target_type="url",
             risk_score=score,
@@ -66,17 +96,17 @@ def _insert_db(target, score, level, verdict="no_major_threat_indicators", confi
 
 
 def test_scan_empty_target_rejected():
-    response = client.post("/api/v1/scan/url", json={"target": ""})
+    response = client.post("/api/v1/scan/url", json={"target": ""}, headers=_auth_headers())
     assert response.status_code in (400, 422)  # Pydantic validation or app-level
 
 
 def test_scan_missing_target_field():
-    response = client.post("/api/v1/scan/url", json={})
+    response = client.post("/api/v1/scan/url", json={}, headers=_auth_headers())
     assert response.status_code == 422
 
 
 def test_scan_unsupported_scheme_rejected():
-    response = client.post("/api/v1/scan/url", json={"target": "ftp://example.com"})
+    response = client.post("/api/v1/scan/url", json={"target": "ftp://example.com"}, headers=_auth_headers())
     assert response.status_code == 400
 
 
@@ -85,7 +115,7 @@ def test_scan_localhost_blocked(monkeypatch):
         monkeypatch,
         ThreatIntelResult("Fake", True, False, 0, "clean"),
     )
-    response = client.post("/api/v1/scan/url", json={"target": "https://localhost"})
+    response = client.post("/api/v1/scan/url", json={"target": "https://localhost"}, headers=_auth_headers())
     assert response.status_code == 200
     data = response.json()
     # Localhost should be blocked from provider lookups
@@ -98,7 +128,7 @@ def test_scan_response_has_all_required_fields(monkeypatch):
         monkeypatch,
         ThreatIntelResult("Fake", True, False, 0, "clean"),
     )
-    response = client.post("/api/v1/scan/url", json={"target": "https://example.com"})
+    response = client.post("/api/v1/scan/url", json={"target": "https://example.com"}, headers=_auth_headers())
     assert response.status_code == 200
     data = response.json()
     assert "target" in data
@@ -118,11 +148,11 @@ def test_scan_result_saved_to_database(monkeypatch):
         monkeypatch,
         ThreatIntelResult("Fake", True, False, 0, "clean"),
     )
-    response = client.post("/api/v1/scan/url", json={"target": "https://test-db-save.example.com"})
+    response = client.post("/api/v1/scan/url", json={"target": "https://test-db-save.example.com"}, headers=_auth_headers())
     assert response.status_code == 200
 
     # Verify it's in the database
-    db_response = client.get("/api/v1/history", params={"search": "test-db-save.example.com"})
+    db_response = client.get("/api/v1/history", params={"search": "test-db-save.example.com"}, headers=_auth_headers())
     assert db_response.status_code == 200
     data = db_response.json()
     assert data["total"] >= 1
@@ -133,7 +163,7 @@ def test_scan_with_malicious_provider(monkeypatch):
         monkeypatch,
         ThreatIntelResult("Fake", True, True, 85, "known malicious"),
     )
-    response = client.post("/api/v1/scan/url", json={"target": "https://malicious-test.example.com"})
+    response = client.post("/api/v1/scan/url", json={"target": "https://malicious-test.example.com"}, headers=_auth_headers())
     assert response.status_code == 200
     data = response.json()
     assert data["risk_score"] >= 80
@@ -146,7 +176,7 @@ def test_scan_suspicious_url_has_findings(monkeypatch):
         monkeypatch,
         ThreatIntelResult("Fake", True, False, 0, "clean"),
     )
-    response = client.post("/api/v1/scan/url", json={"target": "http://192.168.1.1/verify-password"})
+    response = client.post("/api/v1/scan/url", json={"target": "http://192.168.1.1/verify-password"}, headers=_auth_headers())
     assert response.status_code == 200
     data = response.json()
     assert data["risk_score"] > 0
@@ -159,7 +189,7 @@ def test_url_normalization_in_scan(monkeypatch):
         monkeypatch,
         ThreatIntelResult("Fake", True, False, 0, "clean"),
     )
-    response = client.post("/api/v1/scan/url", json={"target": "EXAMPLE.COM"})
+    response = client.post("/api/v1/scan/url", json={"target": "EXAMPLE.COM"}, headers=_auth_headers())
     assert response.status_code == 200
     data = response.json()
     assert data["target"].startswith("https://")
@@ -169,7 +199,7 @@ def test_url_normalization_in_scan(monkeypatch):
 
 
 def test_history_returns_paginated_results():
-    response = client.get("/api/v1/history", params={"limit": 10, "offset": 0})
+    response = client.get("/api/v1/history", params={"limit": 10, "offset": 0}, headers=_auth_headers())
     assert response.status_code == 200
     data = response.json()
     assert "items" in data
@@ -181,7 +211,7 @@ def test_history_returns_paginated_results():
 
 def test_history_search_filter():
     _insert_db("https://search-test-alpha.example.com", 5, "low")
-    response = client.get("/api/v1/history", params={"search": "search-test-alpha"})
+    response = client.get("/api/v1/history", params={"search": "search-test-alpha"}, headers=_auth_headers())
     assert response.status_code == 200
     data = response.json()
     assert any("search-test-alpha" in item["target"] for item in data["items"])
@@ -189,49 +219,49 @@ def test_history_search_filter():
 
 def test_history_risk_level_filter():
     _insert_db("https://risk-filter-critical.test", 85, "critical", verdict="confirmed_malicious")
-    response = client.get("/api/v1/history", params={"risk_level": "critical", "search": "risk-filter-critical"})
+    response = client.get("/api/v1/history", params={"risk_level": "critical", "search": "risk-filter-critical"}, headers=_auth_headers())
     assert response.status_code == 200
     data = response.json()
     assert all(item["risk_level"] == "critical" for item in data["items"])
 
 
 def test_history_invalid_risk_level_rejected():
-    response = client.get("/api/v1/history", params={"risk_level": "invalid"})
+    response = client.get("/api/v1/history", params={"risk_level": "invalid"}, headers=_auth_headers())
     assert response.status_code == 400
 
 
 def test_history_invalid_status_rejected():
-    response = client.get("/api/v1/history", params={"status": "invalid"})
+    response = client.get("/api/v1/history", params={"status": "invalid"}, headers=_auth_headers())
     assert response.status_code == 400
 
 
 def test_history_date_range_filter():
     _insert_db("https://date-range-test.example.com", 5, "low")
-    response = client.get("/api/v1/history", params={"search": "date-range-test", "start_date": "2020-01-01"})
+    response = client.get("/api/v1/history", params={"search": "date-range-test", "start_date": "2020-01-01"}, headers=_auth_headers())
     assert response.status_code == 200
 
 
 def test_history_invalid_start_date():
-    response = client.get("/api/v1/history", params={"start_date": "not-a-date"})
+    response = client.get("/api/v1/history", params={"start_date": "not-a-date"}, headers=_auth_headers())
     assert response.status_code == 400
 
 
 def test_history_invalid_end_date():
-    response = client.get("/api/v1/history", params={"end_date": "not-a-date"})
+    response = client.get("/api/v1/history", params={"end_date": "not-a-date"}, headers=_auth_headers())
     assert response.status_code == 400
 
 
 def test_history_detail_returns_report():
     report = {"findings": [{"rule": "test", "score": 5}], "intelligence": []}
     scan_id = _insert_db("https://detail-test.example.com", 15, "low", report=report)
-    response = client.get(f"/api/v1/history/{scan_id}")
+    response = client.get(f"/api/v1/history/{scan_id}", headers=_auth_headers())
     assert response.status_code == 200
     data = response.json()
     assert data["report"]["findings"][0]["rule"] == "test"
 
 
 def test_history_nonexistent_id_returns_404():
-    response = client.get("/api/v1/history/999999")
+    response = client.get("/api/v1/history/999999", headers=_auth_headers())
     assert response.status_code == 404
 
 
@@ -240,19 +270,19 @@ def test_history_nonexistent_id_returns_404():
 
 def test_compare_same_scan_rejected():
     scan_id = _insert_db("https://compare-same.test", 10, "low")
-    response = client.get("/api/v1/history/compare", params={"left_id": scan_id, "right_id": scan_id})
+    response = client.get("/api/v1/history/compare", params={"left_id": scan_id, "right_id": scan_id}, headers=_auth_headers())
     assert response.status_code == 400
 
 
 def test_compare_nonexistent_scan():
-    response = client.get("/api/v1/history/compare", params={"left_id": 999999, "right_id": 999998})
+    response = client.get("/api/v1/history/compare", params={"left_id": 999999, "right_id": 999998}, headers=_auth_headers())
     assert response.status_code == 404
 
 
 def test_compare_increased_risk():
     left_id = _insert_db("https://compare-increase-left.test", 10, "low", report={"findings": [], "intelligence": []})
     right_id = _insert_db("https://compare-increase-right.test", 70, "critical", report={"findings": [], "intelligence": []})
-    response = client.get("/api/v1/history/compare", params={"left_id": left_id, "right_id": right_id})
+    response = client.get("/api/v1/history/compare", params={"left_id": left_id, "right_id": right_id}, headers=_auth_headers())
     assert response.status_code == 200
     data = response.json()
     assert data["summary"]["risk_score_delta"] == 60
@@ -261,7 +291,7 @@ def test_compare_increased_risk():
 def test_compare_decreased_risk():
     left_id = _insert_db("https://compare-decrease-left.test", 80, "critical", report={"findings": [], "intelligence": []})
     right_id = _insert_db("https://compare-decrease-right.test", 10, "low", report={"findings": [], "intelligence": []})
-    response = client.get("/api/v1/history/compare", params={"left_id": left_id, "right_id": right_id})
+    response = client.get("/api/v1/history/compare", params={"left_id": left_id, "right_id": right_id}, headers=_auth_headers())
     assert response.status_code == 200
     data = response.json()
     assert data["summary"]["risk_score_delta"] == -70
@@ -271,7 +301,7 @@ def test_compare_decreased_risk():
 
 
 def test_dashboard_stats_returns_valid_structure():
-    response = client.get("/api/v1/history/stats/overview")
+    response = client.get("/api/v1/history/stats/overview", headers=_auth_headers())
     assert response.status_code == 200
     data = response.json()
     assert "total_scans" in data
@@ -282,7 +312,7 @@ def test_dashboard_stats_returns_valid_structure():
 
 
 def test_dashboard_risk_distribution_keys():
-    response = client.get("/api/v1/history/stats/overview")
+    response = client.get("/api/v1/history/stats/overview", headers=_auth_headers())
     assert response.status_code == 200
     data = response.json()
     dist = data["risk_distribution"]
@@ -332,18 +362,36 @@ def test_pdf_export_from_scan(monkeypatch):
         monkeypatch,
         ThreatIntelResult("Fake", True, False, 0, "clean"),
     )
-    scan_response = client.post("/api/v1/scan/url", json={"target": "https://pdf-test.example.com"})
+    scan_response = client.post("/api/v1/scan/url", json={"target": "https://pdf-test.example.com"}, headers=_auth_headers())
     assert scan_response.status_code == 200
     scan_data = scan_response.json()
 
     pdf_response = client.post(
         "/api/v1/scan/report.pdf",
         json=scan_data,
-        headers={"Accept": "application/pdf"},
+        headers={**_auth_headers(), "Accept": "application/pdf"},
     )
     assert pdf_response.status_code == 200
     assert pdf_response.headers["content-type"] == "application/pdf"
     assert len(pdf_response.content) > 100  # PDF has actual content
+
+
+def test_pdf_export_from_scan_requires_auth(monkeypatch):
+    _set_providers(
+        monkeypatch,
+        ThreatIntelResult("Fake", True, False, 0, "clean"),
+    )
+    scan_response = client.post("/api/v1/scan/url", json={"target": "https://pdf-auth-test.example.com"}, headers=_auth_headers())
+    assert scan_response.status_code == 200
+    scan_data = scan_response.json()
+
+    # Unauthenticated PDF export must be rejected (401), not silently allowed.
+    pdf_response = client.post(
+        "/api/v1/scan/report.pdf",
+        json=scan_data,
+        headers={"Accept": "application/pdf"},
+    )
+    assert pdf_response.status_code == 401
 
 
 def test_pdf_export_from_history():
@@ -359,13 +407,13 @@ def test_pdf_export_from_history():
         "domain_info": {},
     }
     scan_id = _insert_db("https://pdf-history-test.example.com", 10, "low", report=report)
-    response = client.get(f"/api/v1/history/{scan_id}/report.pdf")
+    response = client.get(f"/api/v1/history/{scan_id}/report.pdf", headers=_auth_headers())
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/pdf"
 
 
 def test_pdf_for_nonexistent_history():
-    response = client.get("/api/v1/history/999999/report.pdf")
+    response = client.get("/api/v1/history/999999/report.pdf", headers=_auth_headers())
     assert response.status_code == 404
 
 
@@ -384,7 +432,7 @@ def test_content_length_too_large():
     response = client.post(
         "/api/v1/scan/url",
         json={"target": "https://example.com"},
-        headers={"Content-Length": "99999999"},
+        headers={"Content-Length": "99999999", **_auth_headers()},
     )
     # The middleware checks content-length header
     # TestClient may not always honor this, but the endpoint should work

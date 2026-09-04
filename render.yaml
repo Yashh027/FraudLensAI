@@ -26,6 +26,8 @@ services:
         sync: false
       - key: LOG_LEVEL
         value: INFO
+      - key: REDIS_URL
+        sync: false
       - key: RATE_LIMIT_PER_MINUTE
         value: "30"
     healthCheckPath: /health/live

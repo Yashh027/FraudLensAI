@@ -3,12 +3,13 @@ from fastapi.responses import Response
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.api.routes.auth import get_current_user
 from app.database import get_db
 from app.models.scan import (
     ScanRequest,
     ScanResponse,
 )
-from app.models.scan_history import ScanHistory
+from app.models.scan_history import ScanHistory, User
 from app.services.scan_engine import scan_url_target
 from app.services.url_normalizer import normalize_url_target
 from app.services.report_generator import build_security_report
@@ -27,6 +28,7 @@ router = APIRouter(
 async def scan_url(
     request: ScanRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         target = normalize_url_target(request.target)
@@ -42,8 +44,9 @@ async def scan_url(
         enrich_domain=True,
     )
 
-    # Save the important result to PostgreSQL.
+    # Save the important result to PostgreSQL associated with the user.
     history = ScanHistory(
+        user_id=current_user.id,
         target=response.target,
         target_type=response.target_type,
         risk_score=response.risk_score,
@@ -71,8 +74,14 @@ async def scan_url(
     # Keep the existing API response unchanged.
     return response
 
+
 @router.post("/report.pdf")
-def export_security_report(scan: ScanResponse):
+def export_security_report(
+    scan: ScanResponse,
+    current_user: User = Depends(get_current_user),
+):
+    # The scan payload is validated by the ScanResponse model; the user is
+    # authenticated so PDF generation cannot be abused anonymously.
     pdf = build_security_report(scan.model_dump(mode="json"))
     return Response(
         content=pdf,

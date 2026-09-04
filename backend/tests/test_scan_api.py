@@ -1,11 +1,33 @@
 from fastapi.testclient import TestClient
 
+from app.database import SessionLocal
 from app.main import app
+from app.models.scan_history import User
+from app.services.auth import create_access_token, hash_password
 from app.services.threat_intelligence.base import ThreatIntelResult
 import app.services.scan_engine as scan_engine
 
 
 client = TestClient(app)
+
+
+def _auth_headers():
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == "scan-test@fraudlens.local").first()
+        if user is None:
+            user = User(
+                email="scan-test@fraudlens.local",
+                hashed_password=hash_password("scan-test-pass"),
+                is_active=True,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        token = create_access_token({"sub": str(user.id)})
+        return {"Authorization": f"Bearer {token}"}
+    finally:
+        db.close()
 
 
 class FakeProvider:
@@ -43,6 +65,7 @@ def test_url_scan_endpoint(monkeypatch):
         json={
             "target": "https://example.com"
         },
+        headers=_auth_headers(),
     )
 
     assert response.status_code == 200
@@ -77,6 +100,7 @@ def test_suspicious_url_scan(monkeypatch):
         json={
             "target": "http://192.168.1.100/login/verify/password"
         },
+        headers=_auth_headers(),
     )
 
     assert response.status_code == 200
@@ -104,6 +128,7 @@ def test_malicious_reputation_produces_critical_risk(monkeypatch):
     response = client.post(
         "/api/v1/scan/url",
         json={"target": "https://example.com"},
+        headers=_auth_headers(),
     )
 
     assert response.status_code == 200
@@ -130,6 +155,7 @@ def test_unavailable_reputation_does_not_break_scan(monkeypatch):
     response = client.post(
         "/api/v1/scan/url",
         json={"target": "https://example.com"},
+        headers=_auth_headers(),
     )
 
     assert response.status_code == 200

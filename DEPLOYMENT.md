@@ -58,6 +58,8 @@ PostgreSQL           Threat Intelligence
 
 The repository includes a `Dockerfile` and `render.yaml` for one-click deployment.
 
+For multi-instance deployments, provision a Redis instance separately and set `REDIS_URL` in the service environment. The app returns a `503` if Redis is unavailable so production traffic is never silently unthrottled.
+
 1. **Fork/clone the repository**
 
 2. **Create a new Web Service on Render** (render.com):
@@ -78,7 +80,8 @@ The repository includes a `Dockerfile` and `render.yaml` for one-click deploymen
    | `URLHAUS_API_KEY` | No | URLhaus API key |
    | `URLSCAN_API_KEY` | No | urlscan.io API key |
    | `LOG_LEVEL` | No | `INFO` (default) |
-   | `RATE_LIMIT_PER_MINUTE` | No | `30` (default) |
+   | `REDIS_URL` | Yes for multi-instance deployments | Redis connection string for the shared rate limiter |
+| `RATE_LIMIT_PER_MINUTE` | No | `30` (default) |
 
 5. **Deploy** — Render auto-deploys on push to `main`
 
@@ -142,6 +145,7 @@ The `create_tables.py` script creates/updates tables automatically.
 | `VIRUSTOTAL_API_KEY` | No | Backend | VirusTotal API key | Yes |
 | `URLHAUS_API_KEY` | No | Backend | URLhaus API key | Yes |
 | `URLSCAN_API_KEY` | No | Backend | urlscan.io API key | Yes |
+| `REDIS_URL` | Yes for distributed rate limiting | Backend | Redis connection string for shared rate limiting | Yes |
 | `RATE_LIMIT_PER_MINUTE` | No | Backend | Max requests/IP/minute (default: 30) | No |
 | `MAX_REQUEST_BYTES` | No | Backend | Max request body size (default: 16384) | No |
 | `LOG_LEVEL` | No | Backend | DEBUG/INFO/WARNING/ERROR (default: INFO) | No |
@@ -214,7 +218,7 @@ The test suite should report **212/212 tests passing**.
 ### 429 Too Many Requests
 - The rate limiter allows 30 requests per IP per minute by default
 - Increase `RATE_LIMIT_PER_MINUTE` if needed
-- This is a process-local limiter (not shared across multiple instances)
+- The limiter is Redis-backed and shared across backend instances; if Redis is unavailable, the API returns `503` instead of silently disabling protection
 
 ### Database connection failure
 - Verify `DATABASE_URL` is correct
