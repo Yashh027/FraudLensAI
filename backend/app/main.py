@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,11 +46,19 @@ MAX_REQUEST_BYTES = _positive_int_env("MAX_REQUEST_BYTES", 16384)
 RATE_LIMIT_PER_MINUTE = _positive_int_env("RATE_LIMIT_PER_MINUTE", 30)
 
 ALLOWED_ORIGINS = [
-    origin.strip() for origin in os.getenv(
+    origin.strip().lower() for origin in os.getenv(
         "ALLOWED_ORIGINS",
         "http://localhost:5173,http://127.0.0.1:5173",
     ).split(",") if origin.strip()
 ]
+
+# GitHub Pages and other hosts are case-insensitive; browsers may send the
+# UTF-8 lowercased origin (e.g. https://yashh027.github.io) even when the
+# configured origin uses a capital letter. Use a case-insensitive regex so
+# CORS matching never fails on host casing.
+_ALLOW_ORIGINS_REGEX = "(?i)^(" + "|".join(
+    re.escape(origin) for origin in ALLOWED_ORIGINS
+) + ")$"
 
 redis_limiter: RedisRateLimiter | None = None
 redis_url = os.getenv("REDIS_URL")
@@ -71,6 +80,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=_ALLOW_ORIGINS_REGEX,
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],

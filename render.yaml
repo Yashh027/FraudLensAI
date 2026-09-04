@@ -3,7 +3,8 @@
 #
 # BEFORE DEPLOYING, set these environment variables in Render Dashboard:
 #   DATABASE_URL            — PostgreSQL connection string
-#   ALLOWED_ORIGINS         — https://YOUR_USERNAME.github.io (comma-separated)
+#   ALLOWED_ORIGINS         — https://YOUR_USERNAME.github.io (comma-separated;
+#                             host casing is matched case-insensitively)
 #   VIRUSTOTAL_API_KEY      — (optional) VirusTotal API key
 #   URLHAUS_API_KEY         — (optional) URLhaus API key
 #   URLSCAN_API_KEY         — (optional) urlscan.io API key

@@ -12,6 +12,7 @@ Covers:
 """
 
 import pytest
+import re
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -352,6 +353,63 @@ def test_security_headers_present():
     assert "x-frame-options" in response.headers
     assert response.headers["x-frame-options"] == "DENY"
     assert "content-security-policy" in response.headers
+
+
+# ─── CORS ────────────────────────────────────────────────────────────────────
+
+
+def test_cors_allows_matching_origin_case_insensitively(monkeypatch):
+    """Browsers send the lowercase host form (e.g. https://yashh027.github.io)
+    while the configured ALLOWED_ORIGINS may use a capital letter. Preflight must
+    succeed regardless of host casing, and unrelated origins must still be blocked."""
+    import app.main as main_module
+
+    monkeypatch.setattr(
+        main_module,
+        "ALLOWED_ORIGINS",
+        ["https://Yashh027.github.io"],
+    )
+    # Rebuild the regex from the patched origins so the running app reflects it.
+    monkeypatch.setattr(
+        main_module,
+        "_ALLOW_ORIGINS_REGEX",
+        "(?i)^(" + "|".join(
+            re.escape(origin) for origin in main_module.ALLOWED_ORIGINS
+        ) + ")$",
+    )
+
+    # Lowercase origin preflight (what browsers actually send) must pass.
+    response = client.options(
+        "/api/v1/auth/register",
+        headers={
+            "Origin": "https://yashh027.github.io",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == "https://yashh027.github.io"
+
+    # Capital-letter origin must also pass.
+    response = client.options(
+        "/api/v1/auth/register",
+        headers={
+            "Origin": "https://Yashh027.github.io",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Content-Type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == "https://Yashh027.github.io"
+
+
+def test_cors_rejects_unrelated_origin():
+    """An origin not in ALLOWED_ORIGINS must not receive CORS headers."""
+    response = client.get(
+        "/health/live",
+        headers={"Origin": "https://evil.example.com"},
+    )
+    assert "access-control-allow-origin" not in response.headers
 
 
 # ─── PDF Export ──────────────────────────────────────────────────────────────
