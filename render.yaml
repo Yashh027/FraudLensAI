@@ -1,0 +1,39 @@
+# FraudLens AI — Render deployment configuration
+# Render will detect this file and offer "Deploy to Render" from the repo.
+#
+# BEFORE DEPLOYING, set these environment variables in Render Dashboard:
+#   DATABASE_URL            — PostgreSQL connection string
+#   ALLOWED_ORIGINS         — https://YOUR_USERNAME.github.io (comma-separated)
+#   VIRUSTOTAL_API_KEY      — (optional) VirusTotal API key
+#   URLHAUS_API_KEY         — (optional) URLhaus API key
+#   URLSCAN_API_KEY         — (optional) urlscan.io API key
+
+services:
+  - type: web
+    name: fraudlens-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: VIRUSTOTAL_API_KEY
+        sync: false
+      - key: URLHAUS_API_KEY
+        sync: false
+      - key: URLSCAN_API_KEY
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "30"
+    healthCheckPath: /health/live
+    autoDeploy: true
+    branch: main
+
+databases:
+  - name: fraudlens-db
+    plan: free
+    databaseName: fraudlens
+    ipAllowList: []

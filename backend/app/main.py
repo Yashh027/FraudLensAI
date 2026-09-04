@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 from collections import defaultdict, deque
@@ -12,6 +13,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+# ── Logging ────────────────────────────────────────────────────────────────
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("fraudlens")
 
 from app.api.routes.scan import router as scan_router
 from app.api.routes.history import router as history_router
@@ -89,6 +99,7 @@ async def reliability_middleware(request: Request, call_next):
     try:
         response = await call_next(request)
     except SQLAlchemyError:
+        logger.error("Database error for %s %s", request.method, request.url.path, exc_info=True)
         return JSONResponse(
             status_code=503,
             content={
@@ -97,6 +108,7 @@ async def reliability_middleware(request: Request, call_next):
             },
         )
     except Exception:
+        logger.exception("Unhandled error for %s %s", request.method, request.url.path)
         return JSONResponse(
             status_code=500,
             content={
@@ -114,6 +126,7 @@ async def reliability_middleware(request: Request, call_next):
 
 
 ensure_phase3_schema()
+logger.info("FraudLens AI backend starting (log level=%s, rate_limit=%d/min)", LOG_LEVEL, RATE_LIMIT_PER_MINUTE)
 
 app.include_router(scan_router)
 app.include_router(history_router)

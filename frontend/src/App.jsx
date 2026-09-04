@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   AlertTriangle,
@@ -30,6 +30,10 @@ import {
 } from "lucide-react";
 
 import "./App.css";
+
+// Production API base URL — empty string in development (Vite proxy handles /api).
+// In production builds set VITE_API_BASE_URL to the backend's public HTTPS URL.
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
 
 function getRiskClass(level) {
   if (level === "critical") return "critical";
@@ -259,7 +263,7 @@ function App() {
     });
   }
 
-  async function loadHistory() {
+  const loadHistory = useCallback(async () => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 6000);
 
@@ -272,7 +276,7 @@ function App() {
       if (historyStartDate) params.set("start_date", historyStartDate);
       if (historyEndDate) params.set("end_date", historyEndDate);
 
-      const response = await fetch(`/api/v1/history?${params.toString()}`, {
+      const response = await fetch(`${API_BASE}/api/v1/history?${params.toString()}`,{
         method: "GET", signal: controller.signal, cache: "no-store",
       });
       if (!response.ok) throw new Error(`History API returned ${response.status}.`);
@@ -294,13 +298,13 @@ function App() {
       clearTimeout(timeout);
       setHistoryLoading(false);
     }
-  }
+  }, [historySearch, historyRisk, historyStatus, historyStartDate, historyEndDate]);
 
-  async function loadComparisonCandidates() {
+  const loadComparisonCandidates = useCallback(async () => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 6000);
     try {
-      const response = await fetch("/api/v1/history?limit=200&offset=0", {
+      const response = await fetch(`${API_BASE}/api/v1/history?limit=200&offset=0`,{
         method: "GET",
         cache: "no-store",
         signal: controller.signal,
@@ -321,14 +325,14 @@ function App() {
     } finally {
       clearTimeout(timeout);
     }
-  }
+  }, []);
 
-  async function loadDashboardStats() {
+  const loadDashboardStats = useCallback(async () => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 6000);
     try {
       setDashboardLoading(true);
-      const response = await fetch("/api/v1/history/stats/overview", {
+      const response = await fetch(`${API_BASE}/api/v1/history/stats/overview`,{
         cache: "no-store",
         signal: controller.signal,
       });
@@ -343,14 +347,14 @@ function App() {
       clearTimeout(timeout);
       setDashboardLoading(false);
     }
-  }
+  }, []);
 
-  async function loadSystemHealth() {
+  const loadSystemHealth = useCallback(async () => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
 
     try {
-      const response = await fetch("/health", {
+      const response = await fetch(`${API_BASE}/health`,{
         cache: "no-store",
         signal: controller.signal,
       });
@@ -376,7 +380,7 @@ function App() {
     } finally {
       clearTimeout(timeout);
     }
-  }
+  }, []);
 
   function addLocalHistoryRecord(data) {
     if (!data) return;
@@ -544,8 +548,8 @@ function App() {
 
     try {
       const response = historyId
-        ? await fetch(`/api/v1/history/${historyId}/report.pdf`, { cache: "no-store" })
-        : await fetch("/api/v1/scan/report.pdf", {
+        ? await fetch(`${API_BASE}/api/v1/history/${historyId}/report.pdf`,{ cache: "no-store" })
+        : await fetch(`${API_BASE}/api/v1/scan/report.pdf`,{
             method: "POST",
             headers: { "Content-Type": "application/json", Accept: "application/pdf" },
             body: JSON.stringify(scan),
@@ -613,7 +617,7 @@ function App() {
     );
 
     try {
-      const scanRequest = fetch("/api/v1/scan/url", {
+      const scanRequest = fetch(`${API_BASE}/api/v1/scan/url`,{
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -697,7 +701,7 @@ function App() {
 
     try {
       const response = await fetch(
-        `/api/v1/history/${id}`
+        `${API_BASE}/api/v1/history/${id}`
       );
 
       if (!response.ok) {
@@ -732,7 +736,7 @@ function App() {
         left_id: String(compareLeft),
         right_id: String(compareRight),
       });
-      const response = await fetch(`/api/v1/history/compare?${params.toString()}`, {
+      const response = await fetch(`${API_BASE}/api/v1/history/compare?${params.toString()}`, {
         method: "GET",
         cache: "no-store",
         headers: { Accept: "application/json" },
@@ -904,12 +908,17 @@ function App() {
         </div>
       )}
 
+      {/* Skip navigation for accessibility */}
+      <a href="#scanner-input" className="skip-link">
+        Skip to scanner
+      </a>
+
       {/* ================= BACKGROUND SYSTEM ================= */}
 
-      <div className="ambient-grid" />
-      <div className="ambient-glow glow-one" />
-      <div className="ambient-glow glow-two" />
-      <div className="scanlines" />
+      <div className="ambient-grid" aria-hidden="true" />
+      <div className="ambient-glow glow-one" aria-hidden="true" />
+      <div className="ambient-glow glow-two" aria-hidden="true" />
+      <div className="scanlines" aria-hidden="true" />
 
       {/* ================= HEADER ================= */}
 
@@ -985,10 +994,10 @@ function App() {
         </div>
       </header>
 
-      <main className="dashboard">
+      <main className="dashboard" id="main-content" role="main">
         {/* ================= HERO ================= */}
 
-        <section className="hero">
+        <section className="hero" aria-label="Introduction">
           <div className="hero-content">
             <div className="hero-kicker">
               <span className="kicker-line" />
@@ -1139,6 +1148,8 @@ function App() {
           className={`scanner-card ${
             loading ? "is-scanning" : ""
           }`}
+          aria-label="URL security scanner"
+          aria-busy={loading}
         >
           <div className="scanner-topline">
             <div className="scanner-title">
@@ -1185,7 +1196,7 @@ function App() {
             </div>
 
             <form onSubmit={handleScan}>
-              <div className="input-wrapper">
+              <div className="input-wrapper" id="scanner-input">
                 <span className="input-prompt">
                   <span>root@fraudlens</span>:~$
                 </span>
@@ -1226,6 +1237,7 @@ function App() {
                 className="scan-button"
                 type="submit"
                 disabled={loading}
+                aria-label={loading ? SCAN_STAGES[scanStage] || "Scanning" : "Initiate URL scan"}
               >
                 {loading ? (
                   <>
@@ -1398,7 +1410,7 @@ function App() {
           </div>
 
           {error && (
-            <div className="error-banner">
+            <div className="error-banner" role="alert">
               <XCircle size={18} />
               <span>{error}</span>
             </div>
@@ -1414,6 +1426,8 @@ function App() {
                 ? "result-revealed"
                 : "result-entering"
             }`}
+            aria-label="Scan results"
+            aria-live="polite"
           >
             <div className="section-heading">
               <div>
@@ -1436,7 +1450,7 @@ function App() {
               </div>
             </div>
 
-            <div className="result-grid">
+            <div className={`result-grid`}>
               <div className={`score-card ${riskClass}`}>
                 <div className="score-card-header">
                   <span>THREAT INDEX</span>
@@ -2119,7 +2133,7 @@ function App() {
 
         {/* ================= HISTORY ================= */}
 
-        <section className="history-section">
+        <section className="history-section" aria-label="Scan history">
           <div className="section-heading">
             <div>
               <span className="eyebrow">
@@ -2284,12 +2298,22 @@ function App() {
         <div
           className="modal-backdrop"
           onClick={() => setSelectedScan(null)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setSelectedScan(null);
+          }}
+          tabIndex={-1}
+          ref={(el) => {
+            if (el) el.focus();
+          }}
         >
           <div
             className={`history-modal ${selectedRiskClass}`}
             onClick={(event) =>
               event.stopPropagation()
             }
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Scan details for ${selectedScan.target}`}
           >
             <div className="modal-scan-line" />
 

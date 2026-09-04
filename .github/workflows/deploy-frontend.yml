@@ -1,0 +1,68 @@
+# FraudLens AI — Frontend → GitHub Pages
+# Deploys the React/Vite frontend on push to the main branch.
+#
+# REQUIRED REPOSITORY SECRETS (Settings → Secrets → Actions):
+#   VITE_API_BASE_URL  — Public HTTPS URL of your deployed backend
+#                         e.g. https://fraudlens-api.onrender.com
+#
+# OPTIONAL REPOSITORY VARIABLES (Settings → Variables → Actions):
+#   VITE_BASE_PATH     — Set to "/REPO_NAME/" for project sites.
+#                         Leave empty for user sites (username.github.io).
+
+name: Deploy Frontend to GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH }}
+          NODE_ENV: production
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
