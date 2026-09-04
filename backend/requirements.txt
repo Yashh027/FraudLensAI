@@ -37,5 +37,5 @@ urllib3==2.7.0
 uvicorn==0.52.4
 watchfiles==1.2.0
 websockets==17.1
-
+psycopg2-binary==2.9.11
 reportlab==4.4.9
